@@ -41,48 +41,27 @@ def start_codespace():
 def stop_codespace():
     gh("POST", f"/user/codespaces/{CODESPACE_NAME}/stop")
 
-HELP = (
-    "/on — запустить Codespace\n"
-    "/off — остановить Codespace\n"
-    "/status — текущее состояние"
-)
-
 def handle_update(upd):
     msg = upd.get("message", {})
     chat_id = msg.get("chat", {}).get("id")
-    text = (msg.get("text") or "").strip()
-    if not chat_id or not text:
+    if not chat_id or not msg.get("text"):
         return
     if ALLOWED_CHAT and chat_id != ALLOWED_CHAT:
         return
 
-    cmd = text.split()[0].lower()
-
-    if cmd == "/status":
-        tg("sendMessage", chat_id=chat_id, text=f"ℹ️ Состояние: {codespace_state()}")
-
-    elif cmd == "/on":
-        state = codespace_state()
-        if state == "Available":
-            tg("sendMessage", chat_id=chat_id, text="✅ Codespace уже запущен.")
+    state = codespace_state()
+    if state == "Available":
+        tg("sendMessage", chat_id=chat_id, text="✅ Codespace уже запущен.")
+        return
+    tg("sendMessage", chat_id=chat_id, text="▶️ Запускаю Codespace...")
+    start_codespace()
+    for _ in range(24):
+        time.sleep(5)
+        tg("sendChatAction", chat_id=chat_id, action="typing")
+        if codespace_state() == "Available":
+            tg("sendMessage", chat_id=chat_id, text="✅ Готов.")
             return
-        tg("sendMessage", chat_id=chat_id, text="▶️ Запускаю Codespace...")
-        start_codespace()
-        for _ in range(24):
-            time.sleep(5)
-            tg("sendChatAction", chat_id=chat_id, action="typing")
-            if codespace_state() == "Available":
-                tg("sendMessage", chat_id=chat_id, text="✅ Codespace запущен и готов.")
-                return
-        tg("sendMessage", chat_id=chat_id, text="⚠️ Таймаут — проверь вручную.")
-
-    elif cmd == "/off":
-        tg("sendMessage", chat_id=chat_id, text="⏹ Останавливаю...")
-        stop_codespace()
-        tg("sendMessage", chat_id=chat_id, text="✅ Codespace остановлен.")
-
-    else:
-        tg("sendMessage", chat_id=chat_id, text=HELP)
+    tg("sendMessage", chat_id=chat_id, text="⚠️ Таймаут — проверь вручную.")
 
 def main():
     offset = None
