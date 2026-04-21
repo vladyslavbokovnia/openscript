@@ -6,8 +6,8 @@
 // @match        https://web.telegram.org/*
 // @grant        GM_xmlhttpRequest
 // @connect      localhost
-// @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/-/main/phantom_opera.user.js
-// @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/-/main/phantom_opera.user.js
+// @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/phantom_opera.user.js
+// @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/phantom_opera.user.js
 // ==/UserScript==
 
 (function () {
