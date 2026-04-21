@@ -1,3 +1,0 @@
-{
-  "postStartCommand": "bash /workspaces/-/start.sh"
-}
