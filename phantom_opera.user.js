@@ -128,10 +128,16 @@
     activeUtterance = new SpeechSynthesisUtterance(src);
     activeUtterance.lang = 'ru-RU';
 
+    activeUtterance.onstart = () => {
+      highlightAndScroll(block, fromIdx);
+      setRingProgress(block, fromIdx / activeWords.length);
+    };
+
     activeUtterance.onboundary = (e) => {
       if (e.name !== 'word') return;
       const before = src.slice(0, e.charIndex);
-      const idx = fromIdx + (before.trim() === '' ? 0 : before.trim().split(/\s+/).length);
+      const wordsBefore = before.trim() === '' ? 0 : before.trim().split(/\s+/).length;
+      const idx = fromIdx + wordsBefore;
       activeWordIdx = idx;
       highlightAndScroll(block, idx);
       setRingProgress(block, idx / activeWords.length);
@@ -246,7 +252,8 @@
 
       const text = textNode.textContent.trim();
       if (!/[а-яёА-ЯЁ]/.test(text)) return;
-      const block = buildBlock(text);
+      const ruText = text.split(/\s+/).filter(w => /[а-яёА-ЯЁ]/.test(w)).join(' ');
+      const block = buildBlock(ruText);
 
       // Insert block after the message text container
       const parent = textNode.closest('.message-content, .bubble-content, .message') || textNode.parentElement;
