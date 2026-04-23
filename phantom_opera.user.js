@@ -130,7 +130,8 @@
 
     activeUtterance.onboundary = (e) => {
       if (e.name !== 'word') return;
-      const idx = fromIdx + src.slice(0, e.charIndex).trim().split(/\s+/).filter(Boolean).length;
+      const before = src.slice(0, e.charIndex);
+      const idx = fromIdx + (before.trim() === '' ? 0 : before.trim().split(/\s+/).length);
       activeWordIdx = idx;
       highlightAndScroll(block, idx);
       setRingProgress(block, idx / activeWords.length);
@@ -244,6 +245,7 @@
       if (!textNode || !textNode.textContent.trim()) return;
 
       const text = textNode.textContent.trim();
+      if (!/[а-яёА-ЯЁ]/.test(text)) return;
       const block = buildBlock(text);
 
       // Insert block after the message text container
