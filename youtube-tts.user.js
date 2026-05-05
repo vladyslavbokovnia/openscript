@@ -1,13 +1,14 @@
 // ==UserScript==
-// @name         📢 YouTube Feed TTS
+// @name         📢 YouTube  TTS
 // @namespace    http://tampermonkey.net/
-// @version      8.0
+// @version      10.0
 // @description  Листает ленту YouTube по роликам, озвучивает название и дату
 // @author       Vlad
 // @match        https://m.youtube.com/*
 // @match        https://www.youtube.com/*
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_registerMenuCommand
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js
 // @run-at       document-idle
@@ -25,6 +26,7 @@
     tiltThreshold: 40,
     tiltCooldown:  1500,
     noImages:      false,
+    shareOnTap:    false,
   };
 
   function loadCFG() {
@@ -43,10 +45,48 @@
   let CFG = loadCFG();
 
   // ── Блокировка картинок ────────────────────────────────────────────────────
+  // Охватываем все thumbnail-контейнеры: лента, канал, шорты
   const THUMB_WRAP = [
-    'ytm-thumbnail-cover','ytd-thumbnail',
-    '.ytm-thumbnail','.compact-media-item-image',
+    'ytm-thumbnail-cover',
+    'ytd-thumbnail',
+    '.ytm-thumbnail',
+    '.compact-media-item-image',
+    'ytm-playlist-thumbnail',
+    '.ytm-thumbnail-cover',
+    'ytm-shorts-lockup-view-model .thumbnail-container',
+    'ytm-shorts-lockup-view-model-v2 .thumbnail-container',
+    '#thumbnail',                          // десктоп
+    'a#thumbnail',
+    'ytd-channel-video-player-renderer',
+    '.ytd-thumbnail',
   ].join(',');
+
+  const NO_IMG_CSS = `
+    ytm-thumbnail-cover,
+    ytd-thumbnail,
+    .ytm-thumbnail,
+    .compact-media-item-image,
+    ytm-playlist-thumbnail,
+    .ytm-thumbnail-cover,
+    ytm-shorts-lockup-view-model .thumbnail-container,
+    ytm-shorts-lockup-view-model-v2 .thumbnail-container,
+    #thumbnail img,
+    a#thumbnail,
+    ytd-rich-grid-media #thumbnail,
+    ytd-channel-video-player-renderer ytd-thumbnail,
+    .ytd-thumbnail {
+      display: none !important;
+    }
+    ytm-compact-video-renderer,
+    ytm-video-with-context-renderer,
+    ytm-rich-item-renderer,
+    ytm-compact-playlist-renderer,
+    ytd-rich-item-renderer,
+    ytd-video-renderer,
+    ytd-compact-video-renderer {
+      padding-top: 0 !important;
+    }
+  `;
 
   const _setAttr = Element.prototype.setAttribute;
   let imgBlocked = false;
@@ -57,19 +97,18 @@
     imgBlocked = enable;
     if (enable) {
       Element.prototype.setAttribute = function (name, value) {
-        if (this.tagName === 'IMG' && (name === 'src' || name === 'srcset') &&
-            this.closest?.(THUMB_WRAP)) return;
+        if (
+          this.tagName === 'IMG' &&
+          (name === 'src' || name === 'srcset') &&
+          this.closest?.(THUMB_WRAP)
+        ) return;
         return _setAttr.call(this, name, value);
       };
       if (!noImgStyleEl) {
         noImgStyleEl = document.createElement('style');
-        noImgStyleEl.textContent = `
-          ytm-thumbnail-cover,ytd-thumbnail,.ytm-thumbnail,
-          .compact-media-item-image,ytm-playlist-thumbnail{display:none!important}
-          ytm-compact-video-renderer,ytm-video-with-context-renderer,
-          ytm-rich-item-renderer{padding-top:0!important}
-        `;
-        document.head.appendChild(noImgStyleEl);
+        noImgStyleEl.id = 'yt-tts-no-img';
+        noImgStyleEl.textContent = NO_IMG_CSS;
+        (document.head || document.documentElement).appendChild(noImgStyleEl);
       }
     } else {
       Element.prototype.setAttribute = _setAttr;
@@ -78,9 +117,96 @@
     }
   }
 
-  applyImageBlock(CFG.noImages);
+  // Применяем блокировку картинок как можно раньше
+  if (CFG.noImages) applyImageBlock(true);
 
-  // ── Состояние ──────────────────────────────────────────────────────────────
+  // ── Share-on-tap ───────────────────────────────────────────────────────────
+  const CARD_SEL = [
+    'ytm-compact-video-renderer',
+    'ytm-video-with-context-renderer',
+    'ytd-rich-item-renderer',
+    'ytd-compact-video-renderer',
+    'ytd-video-renderer',
+    'ytm-reel-item-renderer',
+    'ytm-shorts-lockup-view-model',
+    'ytm-shorts-lockup-view-model-v2',
+  ].join(',');
+
+  function getVideoId(el) {
+    const links = [el, ...el.querySelectorAll('a[href]')];
+    for (const a of links) {
+      const href = a.href || a.getAttribute?.('href') || '';
+      const m = href.match(/[?&]v=([^&#]+)/) || href.match(/youtu\.be\/([^?#]+)/);
+      if (m) return m[1];
+    }
+    return null;
+  }
+
+  function getCardTitle(card) {
+    const t = card.querySelector(
+      'h3, .compact-media-item-headline, [class*="video-title"], .media-item-headline, #video-title'
+    );
+    return t ? t.textContent.trim() : '';
+  }
+
+  async function openShare(videoId, title) {
+    const url = `https://youtu.be/${videoId}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: title || 'YouTube', url }); return; } catch (_) {}
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast('Скопировано: ' + url);
+    } catch {
+      showToast(url);
+    }
+  }
+
+  function showToast(msg) {
+    const el = Object.assign(document.createElement('div'), { textContent: msg });
+    Object.assign(el.style, {
+      position: 'fixed', bottom: '90px', left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'rgba(0,0,0,0.88)', color: '#fff',
+      padding: '9px 16px', borderRadius: '20px',
+      fontSize: '13px', zIndex: '99999',
+      pointerEvents: 'none',
+      maxWidth: '90vw', whiteSpace: 'nowrap',
+      overflow: 'hidden', textOverflow: 'ellipsis',
+    });
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3000);
+  }
+
+  function patchCard(card) {
+    if (card.dataset.ytSharePatched) return;
+    card.dataset.ytSharePatched = '1';
+
+    card.addEventListener('click', (e) => {
+      if (!CFG.shareOnTap) return; // фича выключена — пропускаем
+      const id = getVideoId(card);
+      if (!id) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      openShare(id, getCardTitle(card));
+    }, true);
+  }
+
+  function scanCards() {
+    document.querySelectorAll(CARD_SEL).forEach(patchCard);
+  }
+
+  const cardObserver = new MutationObserver(scanCards);
+
+  function startCardObserver() {
+    scanCards();
+    cardObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (document.body) startCardObserver();
+  else document.addEventListener('DOMContentLoaded', startCardObserver);
+
+  // ── Состояние TTS ──────────────────────────────────────────────────────────
   let enabled      = false;
   let cardIndex    = 0;
   let autoTimer    = null;
@@ -97,7 +223,7 @@
         || null;
   }
 
-  // ── Карточки ───────────────────────────────────────────────────────────────
+  // ── Карточки TTS ───────────────────────────────────────────────────────────
   function findCards() {
     let c = [...document.querySelectorAll(
       'ytm-video-with-context-renderer,ytm-compact-video-renderer'
@@ -207,14 +333,10 @@
   }
 
   // ── UI ────────────────────────────────────────────────────────────────────
-  let playBtn, settingsBtn, prevBtn, nextBtn, settingsPanel, settingsPanelVisible = false;
-
-  // Общий стиль нижней панели кнопок
-  const BAR_BOTTOM = '14px';
+  let playBtn, prevBtn, nextBtn;
 
   function updatePlayBtn(state) {
     if (!playBtn) return;
-    // state: 'off' | 'speaking' | 'pause'
     if (state === 'off') {
       playBtn.textContent    = '📢';
       playBtn.style.fontSize = '28px';
@@ -231,7 +353,7 @@
     const b = document.createElement('button');
     Object.assign(b.style, {
       position:       'fixed',
-      zIndex:         '2147483647',   // максимально возможный z-index
+      zIndex:         '2147483647',
       border:         '1.5px solid rgba(255,255,255,0.22)',
       background:     'rgba(20,20,20,0.72)',
       color:          '#fff',
@@ -242,11 +364,9 @@
       WebkitTapHighlightColor: 'transparent',
       userSelect:     'none',
       boxShadow:      '0 2px 12px rgba(0,0,0,0.55)',
-      // Гарантируем что кнопка выше любого оверлея YouTube
       pointerEvents:  'all',
       ...extraStyles,
     });
-    // подсветка нажатия
     b.addEventListener('pointerdown',  () => b.style.background = 'rgba(60,60,60,0.9)');
     b.addEventListener('pointerup',    () => b.style.background = 'rgba(20,20,20,0.72)');
     b.addEventListener('pointercancel',() => b.style.background = 'rgba(20,20,20,0.72)');
@@ -255,10 +375,11 @@
   }
 
   function createUI() {
-    // ── Play — чуть левее центра ──
+    // ── Play — по центру внизу ──
     playBtn = btnBase({
-      bottom:       BAR_BOTTOM,
-      left:         'calc(50% - 42px)',
+      bottom:       '14px',
+      left:         '50%',
+      transform:    'translateX(-50%)',
       width:        '60px',
       height:       '60px',
       borderRadius: '50%',
@@ -268,35 +389,30 @@
     playBtn.addEventListener('click', toggle);
     document.body.appendChild(playBtn);
 
-    // ── Settings — чуть правее центра ──
-    settingsBtn = btnBase({
-      bottom:       BAR_BOTTOM,
-      left:         'calc(50% + 10px)',
-      width:        '52px',
-      height:       '52px',
-      borderRadius: '50%',
-      fontSize:     '24px',
-      marginTop:    '4px',  // визуальное выравнивание
-    });
-    settingsBtn.textContent = '⚙️';
-    settingsBtn.addEventListener('click', toggleSettings);
-    document.body.appendChild(settingsBtn);
-
-    // ── Prev / Next (боковые) ──
+    // ── Prev / Next — на всю высоту экрана ──
     function makeNavBtn(side, label) {
       const b = btnBase({
-        top:          '50%',
-        transform:    'translateY(-50%)',
+        top:          '0',
         [side]:       '0',
-        width:        '52px',
-        height:       '288px',
-        borderRadius: side === 'left' ? '0 18px 18px 0' : '18px 0 0 18px',
-        fontSize:     '52px',
+        width:        '48px',
+        height:       '100dvh',   // на всю высоту вьюпорта
+        borderRadius: side === 'left' ? '0 14px 14px 0' : '14px 0 0 14px',
+        fontSize:     '48px',
         fontWeight:   'bold',
         display:      'none',
         border:       'none',
+        // полупрозрачнее чтобы не мешать чтению
+        background:   'rgba(20,20,20,0.45)',
+        // тонкая граница только с внутренней стороны
+        borderLeft:   side === 'right' ? '1px solid rgba(255,255,255,0.12)' : 'none',
+        borderRight:  side === 'left'  ? '1px solid rgba(255,255,255,0.12)' : 'none',
       });
       b.textContent = label;
+      // при наведении/тапе — немного ярче
+      b.addEventListener('pointerdown',  () => b.style.background = 'rgba(60,60,60,0.7)');
+      b.addEventListener('pointerup',    () => b.style.background = 'rgba(20,20,20,0.45)');
+      b.addEventListener('pointercancel',() => b.style.background = 'rgba(20,20,20,0.45)');
+      b.addEventListener('pointerleave', () => b.style.background = 'rgba(20,20,20,0.45)');
       return b;
     }
 
@@ -306,169 +422,6 @@
     nextBtn.addEventListener('click', () => goTo(findCenterIndex() + 1));
     document.body.appendChild(prevBtn);
     document.body.appendChild(nextBtn);
-
-    // ── Панель настроек ──
-    createSettingsPanel();
-  }
-
-  // ── Панель настроек ────────────────────────────────────────────────────────
-  function createSettingsPanel() {
-    settingsPanel = document.createElement('div');
-    Object.assign(settingsPanel.style, {
-      position:      'fixed',
-      bottom:        '84px',
-      left:          '50%',
-      transform:     'translateX(-50%)',
-      zIndex:        '2147483647',
-      background:    'rgba(15,15,15,0.97)',
-      border:        '1px solid rgba(255,255,255,0.13)',
-      borderRadius:  '18px',
-      padding:       '18px 16px',
-      width:         '280px',
-      color:         '#fff',
-      fontFamily:    'system-ui,sans-serif',
-      fontSize:      '14px',
-      boxShadow:     '0 6px 32px rgba(0,0,0,0.8)',
-      display:       'none',
-      flexDirection: 'column',
-      gap:           '16px',
-      pointerEvents: 'all',
-    });
-
-    settingsPanel.innerHTML = `
-      <div style="font-weight:700;font-size:16px">⚙️ Настройки</div>
-
-      <label style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span>Жесты наклона</span>
-        <input type="checkbox" id="cfg-tilt" ${CFG.tiltEnabled?'checked':''}
-          style="width:22px;height:22px;cursor:pointer;accent-color:#e65c00">
-      </label>
-
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <div style="display:flex;justify-content:space-between">
-          <span>Чувствительность наклона</span>
-          <b id="cfg-tilt-val">${CFG.tiltThreshold}°</b>
-        </div>
-        <input type="range" id="cfg-tilt-thresh" min="15" max="70" step="5"
-          value="${CFG.tiltThreshold}"
-          style="width:100%;accent-color:#e65c00">
-        <div style="display:flex;justify-content:space-between;font-size:11px;opacity:.5">
-          <span>← чувствительнее</span><span>грубее →</span>
-        </div>
-      </div>
-
-      <div style="display:flex;flex-direction:column;gap:6px">
-        <div style="display:flex;justify-content:space-between">
-          <span>Скорость речи</span>
-          <b id="cfg-rate-val">${CFG.rate.toFixed(2)}×</b>
-        </div>
-        <input type="range" id="cfg-rate" min="0.5" max="2.0" step="0.05"
-          value="${CFG.rate}"
-          style="width:100%;accent-color:#e65c00">
-        <div style="display:flex;justify-content:space-between;font-size:11px;opacity:.5">
-          <span>← медленнее</span><span>быстрее →</span>
-        </div>
-      </div>
-
-      <label style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <span>Скрыть картинки</span>
-        <input type="checkbox" id="cfg-noimg" ${CFG.noImages?'checked':''}
-          style="width:22px;height:22px;cursor:pointer;accent-color:#e65c00">
-      </label>
-
-      <div style="display:flex;gap:8px">
-        <button id="cfg-save"
-          style="flex:1;padding:11px;border-radius:12px;border:none;
-                 background:#e65c00;color:#fff;font-size:14px;font-weight:700;cursor:pointer">
-          Сохранить
-        </button>
-        <button id="cfg-close"
-          style="flex:1;padding:11px;border-radius:12px;
-                 border:1px solid rgba(255,255,255,0.2);
-                 background:transparent;color:#fff;font-size:14px;cursor:pointer">
-          Закрыть
-        </button>
-      </div>
-
-      <button id="cfg-update"
-        style="padding:10px;border-radius:12px;
-               border:1px solid rgba(255,255,255,0.2);
-               background:transparent;color:#fff;font-size:13px;cursor:pointer">
-        🔄 Проверить обновление
-      </button>
-      <div id="cfg-update-status" style="font-size:12px;opacity:.6;text-align:center;min-height:14px"></div>
-    `;
-
-    document.body.appendChild(settingsPanel);
-
-    // Events
-    const q = s => settingsPanel.querySelector(s);
-
-    q('#cfg-tilt-thresh').addEventListener('input', e =>
-      q('#cfg-tilt-val').textContent = e.target.value + '°'
-    );
-    q('#cfg-rate').addEventListener('input', e =>
-      q('#cfg-rate-val').textContent = parseFloat(e.target.value).toFixed(2) + '×'
-    );
-
-    q('#cfg-save').addEventListener('click', () => {
-      CFG.tiltEnabled   = q('#cfg-tilt').checked;
-      CFG.tiltThreshold = parseFloat(q('#cfg-tilt-thresh').value);
-      CFG.rate          = parseFloat(q('#cfg-rate').value);
-      CFG.noImages      = q('#cfg-noimg').checked;
-      saveCFG(CFG);
-      applyImageBlock(CFG.noImages);
-      if (!CFG.tiltEnabled) disableTilt();
-      else if (enabled) enableTilt();
-      const btn = q('#cfg-save');
-      btn.textContent = '✓ Сохранено';
-      setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);
-    });
-
-    q('#cfg-close').addEventListener('click', () => closeSettings());
-
-    q('#cfg-update').addEventListener('click', async () => {
-      const st = q('#cfg-update-status');
-      st.textContent = 'Проверяю…';
-      try {
-        const url = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js';
-        const res = await fetch(url + '?t=' + Date.now());
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const text = await res.text();
-        const m = text.match(/@version\s+([\d.]+)/);
-        const remote = m ? m[1] : '?';
-        const local  = '8.0';
-        if (remote === local) {
-          st.textContent = `✓ Актуальная версия ${local}`;
-        } else {
-          st.innerHTML = `Новая версия ${remote}! <a href="${url}"
-            style="color:#e65c00" target="_blank">Обновить</a>`;
-        }
-      } catch (err) {
-        st.textContent = '⚠️ ' + err.message;
-      }
-    });
-
-    // Закрытие по тапу вне панели
-    document.addEventListener('pointerdown', e => {
-      if (settingsPanelVisible &&
-          !settingsPanel.contains(e.target) &&
-          e.target !== settingsBtn) {
-        closeSettings();
-      }
-    }, { passive: true });
-  }
-
-  function toggleSettings() {
-    settingsPanelVisible ? closeSettings() : openSettings();
-  }
-  function openSettings() {
-    settingsPanelVisible = true;
-    settingsPanel.style.display = 'flex';
-  }
-  function closeSettings() {
-    settingsPanelVisible = false;
-    settingsPanel.style.display = 'none';
   }
 
   function showNavBtns(show) {
@@ -496,11 +449,114 @@
     }
   }
 
+  // ── Меню Tampermonkey ──────────────────────────────────────────────────────
+  function promptFloat(msg, current, min, max) {
+    const val = prompt(msg, current);
+    if (val === null) return null;
+    const n = parseFloat(val);
+    if (isNaN(n) || n < min || n > max) {
+      alert(`Введите число от ${min} до ${max}`);
+      return null;
+    }
+    return n;
+  }
+
+  function registerMenuCommands() {
+    GM_registerMenuCommand(
+      `🔊 Скорость речи: ${CFG.rate.toFixed(2)}×`,
+      () => {
+        const val = promptFloat('Скорость речи (0.5 – 2.0):', CFG.rate, 0.5, 2.0);
+        if (val === null) return;
+        CFG.rate = val;
+        saveCFG(CFG);
+        alert(`✓ Скорость установлена: ${CFG.rate.toFixed(2)}×`);
+      }
+    );
+
+    GM_registerMenuCommand(
+      `📱 Жесты наклона: ${CFG.tiltEnabled ? 'ВКЛ ✓' : 'ВЫКЛ'}`,
+      () => {
+        CFG.tiltEnabled = !CFG.tiltEnabled;
+        saveCFG(CFG);
+        if (!CFG.tiltEnabled && enabled) disableTilt();
+        else if (CFG.tiltEnabled && enabled) enableTilt();
+        alert(`Жесты наклона: ${CFG.tiltEnabled ? 'включены' : 'выключены'}`);
+      }
+    );
+
+    GM_registerMenuCommand(
+      `📐 Чувствительность наклона: ${CFG.tiltThreshold}°`,
+      () => {
+        const val = promptFloat('Порог наклона в градусах (15 – 70):', CFG.tiltThreshold, 15, 70);
+        if (val === null) return;
+        CFG.tiltThreshold = val;
+        saveCFG(CFG);
+        alert(`✓ Чувствительность: ${CFG.tiltThreshold}°`);
+      }
+    );
+
+    GM_registerMenuCommand(
+      `🖼 Скрыть картинки: ${CFG.noImages ? 'ВКЛ ✓' : 'ВЫКЛ'}`,
+      () => {
+        CFG.noImages = !CFG.noImages;
+        saveCFG(CFG);
+        applyImageBlock(CFG.noImages);
+        alert(`Картинки: ${CFG.noImages ? 'скрыты (обновите страницу для полного эффекта)' : 'показаны (обновите страницу)'}`);
+      }
+    );
+
+    GM_registerMenuCommand(
+      `📤 Поделиться по тапу: ${CFG.shareOnTap ? 'ВКЛ ✓' : 'ВЫКЛ'}`,
+      () => {
+        CFG.shareOnTap = !CFG.shareOnTap;
+        saveCFG(CFG);
+        alert(`Поделиться по тапу: ${CFG.shareOnTap ? 'включено — клик по карточке открывает меню «Поделиться»' : 'выключено'}`);
+      }
+    );
+
+    GM_registerMenuCommand(
+      '🔄 Проверить обновление',
+      async () => {
+        try {
+          const url = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js';
+          const res = await fetch(url + '?t=' + Date.now());
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const text = await res.text();
+          const m = text.match(/@version\s+([\d.]+)/);
+          const remote = m ? m[1] : '?';
+          const local  = '10.0';
+          if (remote === local) {
+            alert(`✓ Актуальная версия ${local}`);
+          } else {
+            if (confirm(`Доступна версия ${remote} (текущая: ${local}). Открыть страницу обновления?`)) {
+              window.open(url, '_blank');
+            }
+          }
+        } catch (err) {
+          alert('⚠️ Ошибка проверки: ' + err.message);
+        }
+      }
+    );
+
+    GM_registerMenuCommand(
+      '♻️ Сбросить настройки',
+      () => {
+        if (!confirm('Сбросить все настройки к значениям по умолчанию?')) return;
+        CFG = { ...DEFAULTS };
+        saveCFG(CFG);
+        applyImageBlock(CFG.noImages);
+        if (enabled) disableTilt();
+        alert('✓ Настройки сброшены. Обновите страницу.');
+      }
+    );
+  }
+
   // ── Инициализация ─────────────────────────────────────────────────────────
   function init() {
     if (document.getElementById('yt-tts-play')) return;
     if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = () => {};
     createUI();
+    registerMenuCommands();
   }
 
   if (document.readyState === 'loading') {
@@ -509,7 +565,7 @@
     init();
   }
 
-  // SPA
+  // SPA — сброс при переходе между страницами
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
