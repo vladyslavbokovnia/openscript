@@ -344,7 +344,7 @@
       playBtn.textContent    = '🔊';
       playBtn.style.fontSize = '30px';
     } else {
-      playBtn.textContent    = '⏸';
+      playBtn.textContent    = '◼️';
       playBtn.style.fontSize = '30px';
     }
   }
