@@ -1,14 +1,16 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.0
+// @version      1.1
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами. Открывать страницу: https://example.com/
-// @match        https://example.com/*
+// @match        https://*/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @sandbox      raw
 // ==/UserScript==
 // Запуск: открыть в браузере пустую страницу https://example.com/ — скрипт заменит её интерфейсом SUBVOICE.
 (function(){
+if(location.origin!=='https://example.com'){if(window.top===window.self)GM_registerMenuCommand('Открыть SUBVOICE',()=>{location.href='https://example.com/'});return}
 document.title='SUBVOICE';
 document.head.innerHTML='<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no"><style>'+`
 :root{color-scheme:dark;--bg:#101116;--p:#1b1c24;--p2:#252731;--t:#f5f5f7;--m:#9b9eae;--a:#b9f36b;--l:#363844}
