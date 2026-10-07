@@ -1,13 +1,18 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.3
-// @description  Субтитры: перевод на русский, озвучка, перемотка наклонами. Открывать страницу: https://example.com/
+// @version      1.4
+// @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
 // @run-at       document-idle
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @connect      www.youtube.com
+// @connect      api.bilibili.com
+// @connect      hdslb.com
+// @connect      b23.tv
 // @sandbox      raw
 // ==/UserScript==
 // Запуск: открыть в браузере пустую страницу https://example.com/ — скрипт заменит её интерфейсом SUBVOICE.
@@ -40,7 +45,7 @@ input[type=range]{width:100%;accent-color:var(--a)}input[type=checkbox]{accent-c
 `+'</style>';
 document.body.removeAttribute('style');document.body.innerHTML=`
 <main class="app">
-<div class="top"><button class="ib pri" id="pick" aria-label="Загрузить субтитры">＋</button><span class="info" id="info">.srt · .vtt · .ass · .txt</span><button class="ib" id="settings" aria-label="Настройки">⚙</button></div>
+<div class="top"><button class="ib pri" id="pick" aria-label="Загрузить субтитры">＋</button><button class="ib" id="link" aria-label="Субтитры по ссылке">🔗</button><span class="info" id="info">.srt · .vtt · .ass · .txt</span><button class="ib" id="settings" aria-label="Настройки">⚙</button></div>
 <div class="bar"><i id="bar"></i></div>
 <section class="reader" id="reader"></section>
 <div class="ctl"><button class="ib" id="prev" aria-label="Назад">⏮</button><button class="ib pri big" id="play" aria-label="Играть / пауза">▶</button><button class="ib" id="next" aria-label="Вперёд">⏭</button></div>
@@ -105,5 +110,30 @@ $('ton').checked=LS('ton')!=='0';$('ton').onchange=()=>LS('ton',$('ton').checked
 function voices(){const val=$('voice').value||LS('voice')||'';$('voice').innerHTML='<option value="">Русский по умолчанию</option>';speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('ru')).forEach(v=>{const o=document.createElement('option');o.value=v.name;o.textContent=v.name;$('voice').append(o)});$('voice').value=val}
 if('speechSynthesis'in window){voices();speechSynthesis.onvoiceschanged=voices}
 setInterval(()=>{$('diag').textContent=['протокол: '+location.protocol+(window.isSecureContext?' (secure)':' (НЕ secure)'),'orientation-событий: '+ec+' · motion: '+mc,'источник: '+['нет','orientation','motion','accelerometer'][got],ps&&'разрешения: '+ps,err&&'ошибка: '+err,!got&&sensOn&&'Нет данных. Chrome: ⋮ → Настройки → Настройки сайтов → Датчики движения → Разрешить'].filter(Boolean).join('\n')},500);$('chk').onclick=()=>{ec=mc=0;err='';sens(true,1)};
+
+const gm=(url,o={})=>new Promise((res,rej)=>GM_xmlhttpRequest(Object.assign({method:'GET',url,timeout:20000,onload:r=>res(r),onerror:()=>rej(new Error('Нет связи: '+new URL(url).hostname)),ontimeout:()=>rej(new Error('Таймаут: '+new URL(url).hostname))},o)));
+const dec=s=>s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+function parseTT(s){s=(s||'').trim();if(!s)return[];if(s[0]==='{'){try{return(JSON.parse(s).events||[]).filter(e=>e.segs).map(e=>e.segs.map(x=>x.utf8).join('').replace(/\s+/g,' ').trim()).filter(Boolean)}catch(e){return[]}}const d=new DOMParser().parseFromString(s,'text/xml');return[...d.querySelectorAll('text,p')].map(n=>dec(n.textContent.replace(/\s+/g,' ').trim())).filter(Boolean)}
+async function ytSubs(id){let tracks=[],title='YouTube';
+const cl=[{n:'ANDROID',v:'20.10.38',ua:'com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip',x:{androidSdkVersion:34}},{n:'WEB',v:'2.20250101.00.00',ua:navigator.userAgent,x:{}}];
+for(const c of cl){try{const r=await gm('https://www.youtube.com/youtubei/v1/player?prettyPrint=false',{method:'POST',anonymous:true,headers:{'Content-Type':'application/json','User-Agent':c.ua},data:JSON.stringify({context:{client:Object.assign({clientName:c.n,clientVersion:c.v,hl:'en'},c.x)},videoId:id})});const j=JSON.parse(r.responseText);tracks=(j.captions&&j.captions.playerCaptionsTracklistRenderer&&j.captions.playerCaptionsTracklistRenderer.captionTracks)||[];title=(j.videoDetails&&j.videoDetails.title)||title;if(tracks.length)break}catch(e){}}
+if(!tracks.length)throw new Error('YouTube не отдал субтитры (их может не быть)');
+const pick=tracks.find(t=>(t.languageCode||'').startsWith('ru'))||tracks.find(t=>t.kind!=='asr')||tracks[0];
+const u=new URL(pick.baseUrl);u.searchParams.set('fmt','json3');
+const lines=parseTT((await gm(u.href,{anonymous:true})).responseText);
+if(!lines.length)throw new Error('YouTube вернул пустой ответ — субтитры недоступны');
+return{title,text:lines.join('\n\n')}}
+async function biliSubs(u){if(/b23\.tv/.test(u)){const r=await gm(u);u=r.finalUrl||u}
+const m=u.match(/\/video\/(BV\w+|av\d+)/i);if(!m)throw new Error('Не нашёл номер видео в ссылке');
+const q=/^av/i.test(m[1])?'aid='+m[1].slice(2):'bvid='+m[1],p=+(new URL(u).searchParams.get('p')||1);
+const v=JSON.parse((await gm('https://api.bilibili.com/x/web-interface/view?'+q)).responseText).data;if(!v)throw new Error('Bilibili: видео не найдено');
+const cid=(v.pages&&v.pages[p-1]&&v.pages[p-1].cid)||v.cid;let subs=null;
+for(const ep of['x/player/wbi/v2','x/player/v2']){try{const j=JSON.parse((await gm('https://api.bilibili.com/'+ep+'?bvid='+v.bvid+'&cid='+cid)).responseText);subs=j.data&&j.data.subtitle&&j.data.subtitle.subtitles;if(subs&&subs.length)break}catch(e){}}
+if(!subs||!subs.length)throw new Error('На Bilibili нет субтитров (часть доступна только после входа в аккаунт)');
+const pick=subs.find(s=>s.lan==='ru')||subs.find(s=>!/^ai-/.test(s.lan))||subs[0];let su=pick.subtitle_url;if(su.startsWith('//'))su='https:'+su;
+const body=JSON.parse((await gm(su)).responseText).body||[];
+return{title:v.title+(v.pages&&v.pages.length>1?' · P'+p:''),text:body.map(x=>String(x.content).replace(/\s+/g,' ').trim()).filter(Boolean).join('\n\n')}}
+async function getSubs(u){u=u.trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);if(m)return ytSubs(m[1]);if(/bilibili\.com|b23\.tv/.test(u))return biliSubs(u);if(/^[\w-]{11}$/.test(u))return ytSubs(u);throw new Error('Не похоже на ссылку YouTube или Bilibili')}
+$('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){return info('⚠️ '+e.message)}fname=r.title;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)};
 lab();show('');sens();
 })();
