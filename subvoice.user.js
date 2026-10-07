@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.2
+// @version      1.3
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами. Открывать страницу: https://example.com/
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -50,6 +50,7 @@ document.body.removeAttribute('style');document.body.innerHTML=`
 <div class="row"><label for="voice">Голос</label><select id="voice"><option value="">Русский по умолчанию</option></select></div>
 <div class="row"><label for="rate">Скорость <span id="rl"></span></label><input id="rate" type="range" min=".6" max="1.5" step=".1" value="1"></div>
 <div class="row"><label><input type="checkbox" id="ton" checked> Наклоны</label></div>
+<div class="row"><label><input type="checkbox" id="asc" checked> Автопрокрутка текста</label></div>
 <div class="row"><label for="tilt">Порог наклона <span id="tl"></span> · сейчас <span id="ang">—</span></label><input id="tilt" type="range" min="8" max="30" step="2" value="16"></div>
 <div class="btns row"><button class="ib" id="swap">Оригинал</button><button class="ib" id="rew">В начало</button><button class="ib" id="copy">Копировать</button><button class="ib" id="dl">Скачать</button><button class="ib" id="clear">Очистить</button><button class="ib" id="close">Закрыть</button></div>
 <div class="row"><button class="ib" id="chk" style="width:100%;height:42px;font-size:14px">Проверить датчики</button><pre class="note" id="diag" style="white-space:pre-wrap;margin:8px 0 0"></pre></div>
@@ -66,7 +67,7 @@ function flow(t){return t.replace(/\[[^\]]{0,40}\]|\([^)]{0,30}\)|[♪♫♬]+/g
 function show(t){cur=t;parse(t);idx=0;pos=off=0;done=false;const r=$('reader');r.textContent='';spans=[];r.scrollTop=0;
 if(!sents.length){r.innerHTML='<div class="empty" id="empty">＋</div>';$('empty').onclick=()=>$('file').click();return counter()}
 const f=document.createDocumentFragment();sents.forEach((s,i)=>{if(brk[i])f.append(document.createElement('br'),document.createElement('br'));const e=document.createElement('span');e.dataset.i=i;e.textContent=s+' ';spans.push(e);f.append(e)});r.append(f);mark()}
-function mark(){spans.forEach(e=>e.classList.remove('cur'));const e=spans[idx],r=$('reader');if(e){e.classList.add('cur');r.scrollTo({top:e.offsetTop-r.clientHeight/2+e.offsetHeight/2,behavior:'smooth'})}counter()}
+function mark(){spans.forEach(e=>e.classList.remove('cur'));const e=spans[idx],r=$('reader');if(e){e.classList.add('cur');if($('asc').checked)r.scrollTo({top:e.offsetTop-r.clientHeight/2+e.offsetHeight/2,behavior:'smooth'})}counter()}
 $('reader').onclick=e=>{const s=e.target.closest('span');if(!s)return;idx=+s.dataset.i;pos=off=0;done=false;mark();if(playing)speak()};
 function speak(){if(!sents.length)return;speechSynthesis.cancel();const s=sents[idx],b=off,u=new SpeechSynthesisUtterance(s.slice(b)||s);u.lang='ru-RU';u.rate=+$('rate').value;const v=speechSynthesis.getVoices().find(x=>x.name===$('voice').value);if(v)u.voice=v;pos=b;u.onboundary=e=>{pos=b+e.charIndex};u.onend=()=>{if(act!==u)return;pos=off=0;if(idx<sents.length-1){idx++;mark();speak()}else{done=true;setPlay(false)}};act=u;speechSynthesis.speak(u)}
 function setPlay(on){playing=on;$('play').textContent=on?'Ⅱ':'▶';wl(on)}
@@ -100,7 +101,7 @@ $('dl').onclick=()=>{const a=document.createElement('a');a.href=URL.createObject
 $('clear').onclick=()=>{stopSpeech();orig=trans='';fname='';show('');modal.classList.remove('open')};
 function lab(){$('rl').textContent=(+$('rate').value).toFixed(1)+'×';$('tl').textContent=$('tilt').value+'°'}
 ['rate','tilt'].forEach(k=>{const v=LS(k);if(v)$(k).value=v;$(k).oninput=()=>{LS(k,$(k).value);lab()}});
-$('ton').checked=LS('ton')!=='0';$('ton').onchange=()=>LS('ton',$('ton').checked?1:0);$('voice').onchange=()=>LS('voice',$('voice').value);
+$('ton').checked=LS('ton')!=='0';$('ton').onchange=()=>LS('ton',$('ton').checked?1:0);$('voice').onchange=()=>LS('voice',$('voice').value);$('asc').checked=LS('asc')!=='0';$('asc').onchange=()=>LS('asc',$('asc').checked?1:0);
 function voices(){const val=$('voice').value||LS('voice')||'';$('voice').innerHTML='<option value="">Русский по умолчанию</option>';speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('ru')).forEach(v=>{const o=document.createElement('option');o.value=v.name;o.textContent=v.name;$('voice').append(o)});$('voice').value=val}
 if('speechSynthesis'in window){voices();speechSynthesis.onvoiceschanged=voices}
 setInterval(()=>{$('diag').textContent=['протокол: '+location.protocol+(window.isSecureContext?' (secure)':' (НЕ secure)'),'orientation-событий: '+ec+' · motion: '+mc,'источник: '+['нет','orientation','motion','accelerometer'][got],ps&&'разрешения: '+ps,err&&'ошибка: '+err,!got&&sensOn&&'Нет данных. Chrome: ⋮ → Настройки → Настройки сайтов → Датчики движения → Разрешить'].filter(Boolean).join('\n')},500);$('chk').onclick=()=>{ec=mc=0;err='';sens(true,1)};
