@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 10.6
+// @version 10.7
 // @description Листает ленту YouTube по роликам, озвучивает название и дату
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -23,13 +23,17 @@
     lang: 'ru-RU',
     rate: 1.05,
     afterDelay: 700,
-    tiltEnabled: true,
+    tiltEnabled: false,
     tiltThreshold: 40,
     tiltCooldown: 1500,
     shareOnTap: false,
+    flipBottom: false,
+    hideBar: true,
   };
 
   function loadCFG() {
+    // v10.7: жесты наклона по умолчанию выключены (разовый сброс старого значения)
+    try { if (GM_getValue('cfgVer', 0) < 2) { GM_setValue('tiltEnabled', false); GM_setValue('cfgVer', 2); } } catch {}
     const cfg = {};
     for (const [k, v] of Object.entries(DEFAULTS)) {
       try { cfg[k] = GM_getValue(k, v); } catch { cfg[k] = v; }
@@ -41,19 +45,29 @@
   }
   let CFG = loadCFG();
 
+  const VERSION = '10.7';
+
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
 
+  let wd1 = null, wd2 = null, dbg = '';
+  function clearWD() { clearTimeout(wd1); clearTimeout(wd2); wd1 = wd2 = null; }
+
   function speak(text, onDone) {
-    synth.cancel();
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.lang = CFG.lang;
-    utt.rate = CFG.rate;
-    utt.pitch = 1.0;
-    utt.volume = 1.0;
-    utt.onend = () => onDone && onDone();
-    utt.onerror = () => onDone && onDone();
-    synth.speak(utt);
+    clearWD(); synth.cancel();
+    let cur = null, fin = false, started = false;
+    const done = () => { if (fin) return; fin = true; clearWD(); onDone && onDone(); };
+    const mk = () => {
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = CFG.lang; u.rate = CFG.rate; u.pitch = 1.0; u.volume = 1.0;
+      u.onstart = () => { if (cur === u) started = true; };
+      u.onend = u.onerror = () => { if (cur === u) done(); };
+      return u;
+    };
+    cur = mk(); synth.speak(cur);
+    // Страховка от зависаний: не стартовало — повтор один раз; не закончилось — идём дальше
+    wd1 = setTimeout(() => { if (!fin && !started) { synth.cancel(); cur = mk(); synth.speak(cur); } }, 2500);
+    wd2 = setTimeout(() => { if (!fin) { dbg = 'таймаут озвучки'; synth.cancel(); done(); } }, 5000 + text.length * 120 / CFG.rate);
   }
 
   // ── Состояние ─────────────────────────────────────────────────────────────
@@ -67,22 +81,34 @@
     'ytm-video-with-context-renderer',
     'ytm-compact-video-renderer',
     'ytm-media-lockup-view-model',
+    'ytm-shorts-lockup-view-model',
+    'ytm-shorts-lockup-view-model-v2',
+    'shorts-lockup-view-model',
     'ytm-rich-item-renderer',
     'ytm-reel-item-renderer',
+    'ytd-reel-item-renderer',
     'ytd-rich-item-renderer',
     'ytd-video-renderer',
     'ytd-compact-video-renderer',
+    'yt-lockup-view-model',
   ];
+  const CARD_SEL = CARD_SELECTORS.join(',');
 
+  // Все типы карточек одним списком в порядке на странице (раньше брался только первый
+  // найденный тип, поэтому Shorts в смешанной ленте пропускались). Вложенные дубли убираем.
   function findCards() {
-    for (const sel of CARD_SELECTORS) {
-      const found = [...document.querySelectorAll(sel)];
-      if (found.length > 0) return found;
+    const all = [...document.querySelectorAll(CARD_SEL)];
+    if (!all.length) {
+      return [...document.querySelectorAll('*')].filter(el => {
+        const tag = el.tagName.toLowerCase();
+        return (tag.startsWith('ytm-') || tag.startsWith('ytd-'))
+          && el.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
+      });
     }
-    return [...document.querySelectorAll('*')].filter(el => {
-      const tag = el.tagName.toLowerCase();
-      return (tag.startsWith('ytm-') || tag.startsWith('ytd-'))
-        && el.querySelector('a[href*="/watch"], a[href*="/shorts/"]');
+    const set = new Set(all);
+    return all.filter(el => {
+      for (let p = el.parentElement; p; p = p.parentElement) if (set.has(p)) return false;
+      return true;
     });
   }
 
@@ -126,6 +152,8 @@
 
   // ── Заголовок / дата ──────────────────────────────────────────────────────
   const TITLE_SELECTORS = [
+    '.shortsLockupViewModelHostMetadataTitle',
+    '.shortsLockupViewModelHostOutsideMetadataTitle',
     '#video-title',
     '.compact-media-item-headline',
     'h3', 'h4',
@@ -136,6 +164,11 @@
     '.ytm-media-lockup-view-model-wiz__text-container span',
   ];
   const DATE_PAT = /назад|час|день|дней|дня|мес|год|лет|мин|сек|нед|week|month|year|hour|day|ago|вчера|сегодня|yesterday|today/i;
+
+  function clean(s) {
+    s = (s || '').replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\uFE0F\u200D]/gu, '').replace(/\s+/g, ' ').trim();
+    return /[\p{L}\p{N}]/u.test(s) ? s.slice(0, 220) : '';
+  }
 
   function extractInfo(card) {
     let title = '';
@@ -149,6 +182,10 @@
         if (t && t.length > 10 && t.length < 200 && !DATE_PAT.test(t)) { title = t; break; }
       }
     }
+    if (!title) {
+      const al = card.querySelector('a[aria-label]')?.getAttribute('aria-label') || '';
+      title = al.replace(/,\s*[\d.,\s]+\S*\s*(views|просмотр\S*|тыс\S*|млн\S*).*$/i, '').trim();
+    }
     let rawDate = '';
     for (const el of card.querySelectorAll('span,p,div')) {
       const t = el.textContent?.trim() || '';
@@ -160,7 +197,9 @@
 
   // Карточка — не видео? (баннер, полка, опрос, реклама...)
   function isSkippable(card) {
-    if (!card.querySelector('a[href*="/watch"], a[href*="/shorts/"]')) return true;
+    if (!card.querySelector('a[href*="/watch"], a[href*="/shorts/"]')) { dbg = 'нет ссылки на видео'; return true; }
+    if (!card.getClientRects().length) return true;
+    if (card.querySelector('ytm-promoted-sparkles-web-renderer,ytm-promoted-video-renderer,ytm-ad-slot-renderer,ytd-ad-slot-renderer,ad-slot-renderer,[class*="ad-badge"],[class*="promoted"]')) { dbg = 'реклама'; return true; }
     const tag = card.tagName.toLowerCase();
     const skipTags = ['ytm-statement-banner-renderer','ytm-survey-renderer',
       'ytm-recognition-shelf-renderer','ytm-horizontal-card-list-renderer',
@@ -175,7 +214,7 @@
     let best = 0, bestDist = Infinity;
     cards.forEach((card, i) => {
       const r = card.getBoundingClientRect();
-      const d = Math.abs(r.top + r.height / 2 - mid);
+      const d = Math.hypot(r.top + r.height / 2 - mid, r.left + r.width / 2 - window.innerWidth / 2);
       if (d < bestDist) { bestDist = d; best = i; }
     });
     return best;
@@ -184,7 +223,7 @@
   // ── Навигация ──────────────────────────────────────────────────────────────
   function goTo(index) {
     if (!enabled) return;
-    clearTimeout(autoTimer); autoTimer = null;
+    clearTimeout(autoTimer); autoTimer = null; clearWD();
     const myGen = ++speakGen;
     synth.cancel();
 
@@ -227,13 +266,11 @@
     }
     lastSpokenEl = card;
 
-    const rect = card.getBoundingClientRect();
-    window.scrollTo({
-      top: window.scrollY + rect.top + rect.height / 2 - window.innerHeight / 2,
-      behavior: 'instant',
-    });
+    card.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
 
-    const { title, date } = extractInfo(card);
+    let { title, date } = extractInfo(card);
+    title = clean(title); date = clean(date);
+    dbg = card.tagName.toLowerCase() + ': ' + (title || 'без заголовка').slice(0, 40);
     if (!title) {
       // Заголовок не найден — пропускаем молча
       autoTimer = setTimeout(() => { autoTimer = null; goTo(cardIndex + 1); }, 200);
@@ -360,7 +397,7 @@
       if (CFG.tiltEnabled) enableTilt();
       waitForCards(() => goTo(findCenterIndex()));
     } else {
-      speakGen++; clearTimeout(autoTimer); autoTimer = null;
+      speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD();
       synth.cancel(); showNavBtns(false); disableTilt();
       updatePlayBtn('off'); lastSpokenEl = null;
     }
@@ -368,7 +405,7 @@
 
   // ── Диагностика ────────────────────────────────────────────────────────────
   function runDiagnostics() {
-    const lines = ['=== YouTube TTS Диагностика v10.6 ===', ''];
+    const lines = ['=== YouTube TTS Диагностика v' + VERSION + ' ===', ''];
 
     lines.push('--- Карточки ---');
     let bestSel = null;
@@ -391,7 +428,7 @@
     lines.push('');
 
     if (bestSel) {
-      const cards = [...document.querySelectorAll(bestSel)];
+      const cards = findCards();
       lines.push(`Всего карточек: ${cards.length}`);
 
       // Найти текущую карточку (по центру экрана)
@@ -423,7 +460,8 @@
       .forEach(v => lines.push(`  ${v.name} (${v.lang})`));
     lines.push('');
     lines.push(`URL: ${location.href.slice(0, 80)}`);
-    lines.push('Скрипт: v10.6');
+    lines.push('Последнее: ' + (dbg || '—'));
+    lines.push('Скрипт: v' + VERSION);
 
     showDiagDialog(lines.join('\n'));
   }
@@ -508,13 +546,24 @@
       alert(`Поделиться по тапу: ${CFG.shareOnTap ? 'включено' : 'выключено'}`);
     });
 
+    GM_registerMenuCommand(`🙃 Переворот вверх ногами → конец ленты: ${CFG.flipBottom ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
+      CFG.flipBottom = !CFG.flipBottom; saveCFG(CFG);
+      alert(`Переворот → конец ленты: ${CFG.flipBottom ? 'включён' : 'выключен'}`);
+    });
+
+    GM_registerMenuCommand(`⬇️ Скрывать нижнюю панель: ${CFG.hideBar ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
+      CFG.hideBar = !CFG.hideBar; saveCFG(CFG);
+      if (!CFG.hideBar) document.documentElement.classList.remove('ytt-hide');
+      alert(`Скрытие нижней панели: ${CFG.hideBar ? 'включено' : 'выключено'}`);
+    });
+
     GM_registerMenuCommand('🔄 Проверить обновление', async () => {
       try {
         const url = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js';
         const res = await fetch(url + '?t=' + Date.now());
         if (!res.ok) throw new Error('HTTP ' + res.status);
         const m = (await res.text()).match(/@version\s+([\d.]+)/);
-        const remote = m ? m[1] : '?', local = '10.6';
+        const remote = m ? m[1] : '?', local = VERSION;
         if (remote === local) alert(`✓ Актуальная версия ${local}`);
         else if (confirm(`Доступна v${remote} (текущая: ${local}). Открыть?`)) window.open(url, '_blank');
       } catch (err) { alert('⚠️ Ошибка: ' + err.message); }
@@ -527,32 +576,110 @@
   }
 
   // ── Share-on-tap ───────────────────────────────────────────────────────────
-  function getVideoId(el) {
+  function getVideoInfo(el) {
     for (const a of [el, ...el.querySelectorAll('a[href]')]) {
-      const href = a.href || a.getAttribute?.('href') || '';
-      const m = href.match(/[?&]v=([^&#]+)/) || href.match(/youtu\.be\/([^?#]+)/);
-      if (m) return m[1];
+      const href = a.href || '';
+      let m = href.match(/[?&]v=([^&#]+)/); if (m) return { id: m[1], short: false };
+      m = href.match(/\/shorts\/([^/?#]+)/); if (m) return { id: m[1], short: true };
+      m = href.match(/youtu\.be\/([^?#]+)/); if (m) return { id: m[1], short: false };
     }
     return null;
   }
-  async function openShare(videoId, title) {
-    const url = `https://youtu.be/${videoId}`;
-    if (navigator.share) { try { await navigator.share({ title: title || 'YouTube', url }); return; } catch {} }
-    try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
+
+  // Всплывающая панель по тапу: «Поделиться» и «Новая вкладка».
+  // Страница не знает про группы вкладок — решает браузер (из вкладки в группе
+  // Chrome обычно открывает новую рядом, в той же группе).
+  let pop = null;
+  function closePop() { pop && pop.remove(); pop = null; }
+  function openShare(info, title) {
+    closePop();
+    const url = `https://youtu.be/${info.id}`;
+    const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
+    pop = document.createElement('div');
+    Object.assign(pop.style, {
+      position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)',
+      display: 'flex', gap: '8px', padding: '8px', background: 'rgba(20,20,20,0.95)',
+      border: '1px solid rgba(255,255,255,0.2)', borderRadius: '18px', zIndex: '2147483647',
+    });
+    const mk = (label, fn) => {
+      const b = Object.assign(document.createElement('button'), { textContent: label });
+      Object.assign(b.style, { padding: '12px 16px', border: 'none', borderRadius: '12px', background: '#2a2a2a', color: '#fff', fontSize: '15px' });
+      b.addEventListener('click', e => { e.stopPropagation(); fn(); });
+      return b;
+    };
+    pop.append(
+      mk('📤 Поделиться', async () => {
+        closePop();
+        if (navigator.share) { try { await navigator.share({ title: title || 'YouTube', url }); return; } catch {} }
+        try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
+      }),
+      mk('↗ Новая вкладка', () => { closePop(); window.open(tabUrl, '_blank'); })
+    );
+    document.body.appendChild(pop);
+    const h = e => { if (pop && pop.contains(e.target)) return; closePop(); document.removeEventListener('pointerdown', h, true); };
+    setTimeout(() => document.addEventListener('pointerdown', h, true), 0);
+    setTimeout(closePop, 8000);
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
     card.dataset.ytSharePatched = '1';
     card.addEventListener('click', e => {
       if (!CFG.shareOnTap) return;
-      const id = getVideoId(card); if (!id) return;
+      const info = getVideoInfo(card); if (!info) return;
       e.preventDefault(); e.stopImmediatePropagation();
-      openShare(id, extractInfo(card).title);
+      openShare(info, extractInfo(card).title);
     }, true);
   }
   const cardObserver = new MutationObserver(() =>
     document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard)
   );
+
+  // ── Переворот вверх ногами → конец ленты ───────────────────────────────────
+  let flipArmed = true, flipT = null;
+  function onFlip(e) {
+    if (!CFG.flipBottom || e.beta == null) return;
+    const down = e.beta < -60 && e.beta > -125 && Math.abs(e.gamma || 0) < 50;
+    if (down) {
+      if (flipArmed && !flipT) flipT = setTimeout(() => { flipT = null; flipArmed = false; flipAction(); }, 350);
+    } else {
+      clearTimeout(flipT); flipT = null;
+      if (e.beta > -35) flipArmed = true;
+    }
+  }
+  function flipAction() {
+    navigator.vibrate && navigator.vibrate(60);
+    const n = findCards().length;
+    if (enabled && n) goTo(n - 1);
+    else window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
+    showToast('⤓ Конец ленты', 1200);
+  }
+
+  // ── Нижняя панель YouTube: прячем при прокрутке вниз ───────────────────────
+  const BAR_SELS = ['ytm-pivot-bar-renderer', '.pivot-bar-renderer', '#pivot-bar', 'ytm-bottom-bar-renderer', 'ytm-mobile-bottom-bar-renderer', '.ytt-bar'];
+  function findBar() {
+    document.querySelectorAll('ytm-app *, body > *').forEach(el => {
+      if (el.classList.contains('ytt-bar')) return;
+      if (!/pivot|bottom|nav|tab/i.test(el.tagName + ' ' + (el.getAttribute('class') || '') + ' ' + el.id)) return;
+      const r = el.getBoundingClientRect();
+      if (r.height < 30 || r.height > 140 || r.width < innerWidth * 0.9 || r.bottom < innerHeight - 2) return;
+      if (getComputedStyle(el).position === 'fixed') el.classList.add('ytt-bar');
+    });
+  }
+  function initBar() {
+    const st = document.createElement('style');
+    st.textContent = BAR_SELS.join(',') + '{transition:transform .25s ease!important}' +
+      BAR_SELS.map(s => 'html.ytt-hide ' + s).join(',') + '{transform:translateY(120%)!important}';
+    document.head.appendChild(st);
+    let lastY = window.scrollY;
+    window.addEventListener('scroll', () => {
+      if (!CFG.hideBar) return;
+      const y = window.scrollY, d = y - lastY;
+      if (Math.abs(d) < 6) return;
+      document.documentElement.classList.toggle('ytt-hide', d > 0 && y > 60);
+      lastY = y;
+    }, { passive: true });
+    [1500, 4000, 8000].forEach(t => setTimeout(findBar, t));
+  }
 
   // ── Инициализация ──────────────────────────────────────────────────────────
   function init() {
@@ -561,6 +688,8 @@
     registerMenuCommands();
     document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard);
     cardObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('deviceorientation', onFlip, { passive: true });
+    initBar();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
@@ -570,9 +699,9 @@
   let lastUrl = location.href;
   new MutationObserver(() => {
     if (location.href !== lastUrl) {
-      lastUrl = location.href;
+      lastUrl = location.href; setTimeout(findBar, 1500);
       if (enabled) {
-        speakGen++; clearTimeout(autoTimer); autoTimer = null;
+        speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD();
         synth.cancel(); lastSpokenEl = null;
         waitForCards(() => goTo(findCenterIndex()));
       }
