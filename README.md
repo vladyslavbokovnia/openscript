@@ -18,7 +18,17 @@ https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/ИМЯ_ФА�
 
 Новый скрипт: положить файл `имя.user.js` в корень репозитория и подставить имя в схему.
 
-## SUBVOICE: как запустить
+## SUBVOICE как сайт (GitHub Pages)
+
+Без Tampermonkey, просто страница по адресу:
+
+https://vladyslavbokovnia.github.io/openscript/subvoice/
+
+Файл страницы: `subvoice/index.html`. Субтитры страница сама не загружает: файл нужно выбрать
+кнопкой «＋» при каждом запуске. Адрес https — датчики наклона работают без обходных путей.
+Включение: Settings → Pages → Source «Deploy from a branch» → ветка `main`, папка `/ (root)`.
+
+## SUBVOICE через Tampermonkey: как запустить
 
 Открыть в браузере пустую страницу https://example.com/ — скрипт заменит её интерфейсом
 SUBVOICE. С любой другой https-страницы: меню Tampermonkey → «Открыть SUBVOICE».
@@ -27,4 +37,5 @@ SUBVOICE. С любой другой https-страницы: меню Tampermonk
 
 В YouTube TTS и SUBVOICE прописаны `@updateURL` и `@downloadURL`, поэтому Tampermonkey
 обновляет их сам при выходе новой версии (растёт номер `@version`). Вручную: Tampermonkey →
-скрипт → проверить обновление.
+скрипт → проверить обновление. Страница на GitHub Pages обновляется сама после каждого коммита
+(через минуту-две).
