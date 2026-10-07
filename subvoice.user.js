@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.1
+// @version      1.2
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами. Открывать страницу: https://example.com/
 // @match        https://*/*
+// @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
+// @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
 // @run-at       document-idle
 // @grant        GM_registerMenuCommand
 // @sandbox      raw
