@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 10.8
+// @version 10.9
 // @description Листает ленту YouTube по роликам, озвучивает название и дату
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -10,6 +10,7 @@
 // @grant GM_getValue
 // @grant GM_registerMenuCommand
 // @grant GM_setClipboard
+// @grant GM_openInTab
 // @updateURL https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js
 // @downloadURL https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js
 // @run-at document-idle
@@ -45,7 +46,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '10.8';
+  const VERSION = '10.9';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -586,35 +587,37 @@
     return null;
   }
 
-  // По тапу: системное «Поделиться» + поверх кнопка «Новая вкладка».
-  // Страница не знает про группы вкладок — решает браузер (из вкладки в группе
-  // Chrome обычно открывает новую рядом, в той же группе).
+  // По тапу: сразу появляется полупрозрачная кнопка «В фоне» (новая вкладка в фоне);
+  // если за 1 с её не нажать — открывается системное «Поделиться».
+  // Страница не знает про группы вкладок — решает браузер.
   let pop = null, popTimer = null;
-  function closePop() { clearTimeout(popTimer); pop && pop.remove(); pop = null; }
+  function closePop() { clearTimeout(popTimer); popTimer = null; pop && pop.remove(); pop = null; }
+  function openBg(url) {
+    try { if (typeof GM_openInTab === 'function') { GM_openInTab(url, { active: false, insert: true, setParent: true }); showToast('↗ Открыто в фоне', 1500); return; } } catch {}
+    window.open(url, '_blank');
+  }
+  async function doShare(url, title) {
+    if (navigator.share) {
+      try { await navigator.share({ title: title || 'YouTube', url }); }
+      catch (e) { if (!e || e.name !== 'AbortError') { try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); } } }
+      return;
+    }
+    try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
+  }
   function openShare(info, title) {
     closePop();
     const url = `https://youtu.be/${info.id}`;
     const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
-    // Кнопка «Новая вкладка» появляется поверх страницы одновременно с системным «Поделиться»
-    pop = Object.assign(document.createElement('button'), { textContent: '↗ Новая вкладка' });
+    pop = Object.assign(document.createElement('button'), { textContent: '↗ В фоне' });
     Object.assign(pop.style, {
-      position: 'fixed', bottom: '150px', left: '50%', transform: 'translateX(-50%)',
-      padding: '14px 20px', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '18px',
-      background: 'rgba(20,20,20,0.95)', color: '#fff', fontSize: '16px', zIndex: '2147483647',
-      boxShadow: '0 2px 12px rgba(0,0,0,0.55)',
+      position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
+      padding: '10px 18px', border: '1px solid rgba(255,255,255,0.4)', borderRadius: '999px',
+      background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(3px)', webkitBackdropFilter: 'blur(3px)',
+      color: '#fff', fontSize: '14px', textShadow: '0 1px 3px rgba(0,0,0,0.9)', zIndex: '2147483647',
     });
-    pop.addEventListener('click', e => { e.stopPropagation(); closePop(); window.open(tabUrl, '_blank'); });
+    pop.addEventListener('click', e => { e.stopPropagation(); closePop(); openBg(tabUrl); });
     document.body.appendChild(pop);
-    popTimer = setTimeout(closePop, 10000);
-    (async () => {
-      if (navigator.share) {
-        try { await navigator.share({ title: title || 'YouTube', url }); }
-        catch (e) { if (!e || e.name !== 'AbortError') { try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); } } }
-        if (pop) { clearTimeout(popTimer); popTimer = setTimeout(closePop, 8000); }
-        return;
-      }
-      try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
-    })();
+    popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1000);
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
@@ -634,15 +637,22 @@
   // Пока телефон перевёрнут, прокрутка в конец повторяется (лента дозагружается и
   // уходит дальше). Работает независимо от озвучки; озвучка на это время ставится на паузу.
   let flipT = null, flipLoop = null;
+  const CONT_SEL = 'ytm-continuation-item-renderer,ytd-continuation-item-renderer,[class*="continuation-item"]';
+  let flipH = 0, flipSame = 0;
   function flipStep() {
+    const h = document.documentElement.scrollHeight;
+    if (h === flipH) flipSame++; else { flipSame = 0; flipH = h; }
+    // Лента не растёт — «встряхиваем»: чуть вверх, затем снова вниз, чтобы сработала подгрузка
+    if (flipSame >= 3 && flipSame % 2 === 1) { window.scrollBy(0, -500); return; }
+    const c = document.querySelector(CONT_SEL);
+    if (c) c.scrollIntoView({ block: 'end', behavior: 'instant' });
     window.scrollTo(0, document.documentElement.scrollHeight);
-    const c = findCards();
-    if (c.length) c[c.length - 1].scrollIntoView({ block: 'end', behavior: 'instant' });
   }
   function flipStart() {
     navigator.vibrate && navigator.vibrate(60);
     showToast('⤓ Конец ленты', 1200);
     if (enabled) { speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD(); synth.cancel(); }
+    flipH = 0; flipSame = 0;
     flipStep();
     flipLoop = setInterval(flipStep, 500);
   }
