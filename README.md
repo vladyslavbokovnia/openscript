@@ -29,14 +29,6 @@ SUBVOICE. С любой другой https-страницы: меню Tampermonk
   субтитры по ссылке (страницу видео и сам ролик не открывает), переводит на русский и читает.
   Если буфер обмена недоступен или в нём не ссылка, спросит ссылку вручную.
 
-## Необязательное
-
-- `subvoice/index.html` — то же приложение как сайт на GitHub Pages
-  (https://vladyslavbokovnia.github.io/openscript/subvoice/). Включение: Settings → Pages →
-  Deploy from a branch → `main` / `/ (root)`. Для работы с телефоном не нужен.
-- `subs-to-subvoice.user.js` — кнопка 📝 на странице видео YouTube/Bilibili, отправляет субтитры
-  на страницу Pages. Нужен только вместе со страницей Pages.
-
 ## Обновления
 
 В YouTube TTS и SUBVOICE прописаны `@updateURL` и `@downloadURL`, поэтому Tampermonkey
