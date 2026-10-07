@@ -24,7 +24,6 @@ input[type=range]{width:100%;accent-color:var(--a)}input[type=checkbox]{accent-c
 .note{font-size:11px;color:var(--m);line-height:1.45;margin:0}
 @media(max-height:650px){.ctl .ib{width:48px;height:48px}.ctl .big{width:68px}.reader{font-size:16px;padding:10px}}
 </style></head><body>
-
 <main class="app">
 <div class="top"><button class="ib pri" id="pick" aria-label="Загрузить субтитры">＋</button><span class="info" id="info">.srt · .vtt · .ass · .txt</span><button class="ib" id="settings" aria-label="Настройки">⚙</button></div>
 <div class="bar"><i id="bar"></i></div>
@@ -42,7 +41,6 @@ input[type=range]{width:100%;accent-color:var(--a)}input[type=checkbox]{accent-c
 <div class="row"><button class="ib" id="chk" style="width:100%;height:42px;font-size:14px">Проверить датчики</button><pre class="note" id="diag" style="white-space:pre-wrap;margin:8px 0 0"></pre></div>
 <p class="note">Наклон влево/вправо — предложение назад/вперёд, удержание — продолжает, каждый шаг с вибрацией. Работает при включённом экране.</p>
 </div></div>
-
 <script>
 const $=id=>document.getElementById(id),LS=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}};
 let orig='',trans='',cur='',showOrig=false,fname='',sents=[],brk=[],spans=[],idx=0,pos=0,off=0,playing=false,done=false,act=null,wlk=null,sensOn=false,cd=0,tt=null,got=0,base=null,ec=0,mc=0,err='',ps='',accS=null,permOk=false;
@@ -92,5 +90,6 @@ $('ton').checked=LS('ton')!=='0';$('ton').onchange=()=>LS('ton',$('ton').checked
 function voices(){const val=$('voice').value||LS('voice')||'';$('voice').innerHTML='<option value="">Русский по умолчанию</option>';speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('ru')).forEach(v=>{const o=document.createElement('option');o.value=v.name;o.textContent=v.name;$('voice').append(o)});$('voice').value=val}
 if('speechSynthesis'in window){voices();speechSynthesis.onvoiceschanged=voices}
 setInterval(()=>{$('diag').textContent=['протокол: '+location.protocol+(window.isSecureContext?' (secure)':' (НЕ secure)'),'orientation-событий: '+ec+' · motion: '+mc,'источник: '+['нет','orientation','motion','accelerometer'][got],ps&&'разрешения: '+ps,err&&'ошибка: '+err,!got&&sensOn&&'Нет данных. Chrome: ⋮ → Настройки → Настройки сайтов → Датчики движения → Разрешить'].filter(Boolean).join('\n')},500);$('chk').onclick=()=>{ec=mc=0;err='';sens(true,1)};
-lab();show('');sens();
+function imp(){const p=new URLSearchParams(location.hash.slice(1)),t=p.get('t');if(!t)return;history.replaceState(null,'',location.pathname+location.search);fname=p.get('n')||'subtitles';orig=flow(t);trans='';showOrig=false;stopSpeech();show(orig);info('Перевод…');translate(orig)}
+lab();show('');sens();imp();
 </script></body></html>
