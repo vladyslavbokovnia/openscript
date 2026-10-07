@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 10.7
+// @version 10.8
 // @description Листает ленту YouTube по роликам, озвучивает название и дату
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -45,7 +45,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '10.7';
+  const VERSION = '10.8';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -586,39 +586,35 @@
     return null;
   }
 
-  // Всплывающая панель по тапу: «Поделиться» и «Новая вкладка».
+  // По тапу: системное «Поделиться» + поверх кнопка «Новая вкладка».
   // Страница не знает про группы вкладок — решает браузер (из вкладки в группе
   // Chrome обычно открывает новую рядом, в той же группе).
-  let pop = null;
-  function closePop() { pop && pop.remove(); pop = null; }
+  let pop = null, popTimer = null;
+  function closePop() { clearTimeout(popTimer); pop && pop.remove(); pop = null; }
   function openShare(info, title) {
     closePop();
     const url = `https://youtu.be/${info.id}`;
     const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
-    pop = document.createElement('div');
+    // Кнопка «Новая вкладка» появляется поверх страницы одновременно с системным «Поделиться»
+    pop = Object.assign(document.createElement('button'), { textContent: '↗ Новая вкладка' });
     Object.assign(pop.style, {
-      position: 'fixed', bottom: '90px', left: '50%', transform: 'translateX(-50%)',
-      display: 'flex', gap: '8px', padding: '8px', background: 'rgba(20,20,20,0.95)',
-      border: '1px solid rgba(255,255,255,0.2)', borderRadius: '18px', zIndex: '2147483647',
+      position: 'fixed', bottom: '150px', left: '50%', transform: 'translateX(-50%)',
+      padding: '14px 20px', border: '1px solid rgba(255,255,255,0.25)', borderRadius: '18px',
+      background: 'rgba(20,20,20,0.95)', color: '#fff', fontSize: '16px', zIndex: '2147483647',
+      boxShadow: '0 2px 12px rgba(0,0,0,0.55)',
     });
-    const mk = (label, fn) => {
-      const b = Object.assign(document.createElement('button'), { textContent: label });
-      Object.assign(b.style, { padding: '12px 16px', border: 'none', borderRadius: '12px', background: '#2a2a2a', color: '#fff', fontSize: '15px' });
-      b.addEventListener('click', e => { e.stopPropagation(); fn(); });
-      return b;
-    };
-    pop.append(
-      mk('📤 Поделиться', async () => {
-        closePop();
-        if (navigator.share) { try { await navigator.share({ title: title || 'YouTube', url }); return; } catch {} }
-        try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
-      }),
-      mk('↗ Новая вкладка', () => { closePop(); window.open(tabUrl, '_blank'); })
-    );
+    pop.addEventListener('click', e => { e.stopPropagation(); closePop(); window.open(tabUrl, '_blank'); });
     document.body.appendChild(pop);
-    const h = e => { if (pop && pop.contains(e.target)) return; closePop(); document.removeEventListener('pointerdown', h, true); };
-    setTimeout(() => document.addEventListener('pointerdown', h, true), 0);
-    setTimeout(closePop, 8000);
+    popTimer = setTimeout(closePop, 10000);
+    (async () => {
+      if (navigator.share) {
+        try { await navigator.share({ title: title || 'YouTube', url }); }
+        catch (e) { if (!e || e.name !== 'AbortError') { try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); } } }
+        if (pop) { clearTimeout(popTimer); popTimer = setTimeout(closePop, 8000); }
+        return;
+      }
+      try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
+    })();
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
@@ -635,23 +631,32 @@
   );
 
   // ── Переворот вверх ногами → конец ленты ───────────────────────────────────
-  let flipArmed = true, flipT = null;
-  function onFlip(e) {
-    if (!CFG.flipBottom || e.beta == null) return;
-    const down = e.beta < -60 && e.beta > -125 && Math.abs(e.gamma || 0) < 50;
-    if (down) {
-      if (flipArmed && !flipT) flipT = setTimeout(() => { flipT = null; flipArmed = false; flipAction(); }, 350);
-    } else {
-      clearTimeout(flipT); flipT = null;
-      if (e.beta > -35) flipArmed = true;
-    }
+  // Пока телефон перевёрнут, прокрутка в конец повторяется (лента дозагружается и
+  // уходит дальше). Работает независимо от озвучки; озвучка на это время ставится на паузу.
+  let flipT = null, flipLoop = null;
+  function flipStep() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const c = findCards();
+    if (c.length) c[c.length - 1].scrollIntoView({ block: 'end', behavior: 'instant' });
   }
-  function flipAction() {
+  function flipStart() {
     navigator.vibrate && navigator.vibrate(60);
-    const n = findCards().length;
-    if (enabled && n) goTo(n - 1);
-    else window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
     showToast('⤓ Конец ленты', 1200);
+    if (enabled) { speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD(); synth.cancel(); }
+    flipStep();
+    flipLoop = setInterval(flipStep, 500);
+  }
+  function flipStop() {
+    clearTimeout(flipT); flipT = null;
+    if (!flipLoop) return;
+    clearInterval(flipLoop); flipLoop = null;
+    if (enabled) goTo(findCenterIndex());
+  }
+  function onFlip(e) {
+    if (!CFG.flipBottom || e.beta == null) { flipStop(); return; }
+    const down = e.beta < -60 && e.beta > -125 && Math.abs(e.gamma || 0) < 50;
+    if (down) { if (!flipT && !flipLoop) flipT = setTimeout(() => { flipT = null; flipStart(); }, 350); }
+    else flipStop();
   }
 
   // ── Нижняя панель YouTube: прячем при прокрутке вниз ───────────────────────
