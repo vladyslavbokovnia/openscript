@@ -7,8 +7,7 @@ Userscripts для Tampermonkey (Android, Kiwi). Чтобы установить
 | Скрипт | Что делает | Установить |
 |---|---|---|
 | YouTube TTS | Листает ленту YouTube и озвучивает названия и даты | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js |
-| SUBVOICE | Читает субтитры вслух с переводом на русский, перемотка наклонами | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js |
-| Субтитры → SUBVOICE | Кнопка 📝 на видео YouTube и Bilibili: берёт субтитры и открывает их в SUBVOICE (перевод и озвучка) | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subs-to-subvoice.user.js |
+| SUBVOICE | Читает субтитры вслух с переводом на русский, перемотка наклонами, субтитры по ссылке YouTube/Bilibili | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js |
 | te_phantom_opera | см. заголовок файла | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js |
 
 ## Схема ссылки
@@ -19,35 +18,27 @@ https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/ИМЯ_ФА�
 
 Новый скрипт: положить файл `имя.user.js` в корень репозитория и подставить имя в схему.
 
-## SUBVOICE как сайт (GitHub Pages)
-
-Без Tampermonkey, просто страница по адресу:
-
-https://vladyslavbokovnia.github.io/openscript/subvoice/
-
-Файл страницы: `subvoice/index.html`. Субтитры страница сама не загружает: файл нужно выбрать
-кнопкой «＋» при каждом запуске (или прислать скриптом «Субтитры → SUBVOICE»). Адрес https —
-датчики наклона работают без обходных путей.
-Включение: Settings → Pages → Source «Deploy from a branch» → ветка `main`, папка `/ (root)`.
-
-## Субтитры с YouTube и Bilibili
-
-Обычная страница не может забрать субтитры у этих сайтов (запрет браузера), поэтому их берёт
-скрипт «Субтитры → SUBVOICE» прямо на странице видео. Кнопка 📝 появляется слева внизу на
-страницах `/watch`, `/shorts` (YouTube) и `/video/` (Bilibili). Скрипт открывает страницу SUBVOICE
-со ссылкой вида `…/subvoice/#n=Название&t=Текст`; SUBVOICE переводит текст на русский и читает.
-Если у видео нет субтитров, скрипт напишет об этом; на Bilibili часть субтитров доступна только
-после входа в аккаунт.
-
-## SUBVOICE через Tampermonkey: как запустить
+## SUBVOICE: как запустить
 
 Открыть в браузере пустую страницу https://example.com/ — скрипт заменит её интерфейсом
-SUBVOICE. С любой другой https-страницы: меню Tampermonkey → «Открыть SUBVOICE». Приём
-субтитров из скрипта YouTube/Bilibili работает только на странице Pages.
+SUBVOICE. С любой другой https-страницы: меню Tampermonkey → «Открыть SUBVOICE».
+
+Субтитры можно загрузить двумя способами:
+- «＋» — выбрать файл (.srt, .vtt, .ass, .txt);
+- «🔗» — скопировать ссылку на видео YouTube или Bilibili и нажать кнопку: скрипт сам берёт
+  субтитры по ссылке (страницу видео и сам ролик не открывает), переводит на русский и читает.
+  Если буфер обмена недоступен или в нём не ссылка, спросит ссылку вручную.
+
+## Необязательное
+
+- `subvoice/index.html` — то же приложение как сайт на GitHub Pages
+  (https://vladyslavbokovnia.github.io/openscript/subvoice/). Включение: Settings → Pages →
+  Deploy from a branch → `main` / `/ (root)`. Для работы с телефоном не нужен.
+- `subs-to-subvoice.user.js` — кнопка 📝 на странице видео YouTube/Bilibili, отправляет субтитры
+  на страницу Pages. Нужен только вместе со страницей Pages.
 
 ## Обновления
 
-В YouTube TTS, SUBVOICE и «Субтитры → SUBVOICE» прописаны `@updateURL` и `@downloadURL`, поэтому
-Tampermonkey обновляет их сам при выходе новой версии (растёт номер `@version`). Вручную:
-Tampermonkey → скрипт → проверить обновление. Страница на GitHub Pages обновляется сама после
-каждого коммита (через минуту-две).
+В YouTube TTS и SUBVOICE прописаны `@updateURL` и `@downloadURL`, поэтому Tampermonkey
+обновляет их сам при выходе новой версии (растёт номер `@version`). Вручную: Tampermonkey →
+скрипт → проверить обновление.
