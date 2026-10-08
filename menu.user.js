@@ -1,12 +1,16 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.0
+// @version      1.1
 // @description  Круговое контекстное меню без текста: озвучка с выделенного слова и дальше / стандартное меню
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @grant        GM_openInTab
+// @grant        GM_xmlhttpRequest
+// @grant        GM_info
+// @connect      raw.githubusercontent.com
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
 // ==/UserScript==
@@ -18,6 +22,7 @@
   const BTN = 52;             // размер кнопки
   const BYPASS_MS = 10000;    // сколько секунд "стандартное меню" остаётся разрешённым
   const MAX_CHARS = 80000;    // лимит текста для озвучки
+  const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
 
   let host = null, root = null, wrap = null;
   let isOpen = false;
@@ -248,6 +253,45 @@
     bypassUntil = Date.now() + BYPASS_MS;
     if (navigator.vibrate) navigator.vibrate(25);
     close();
+  }
+
+  /* ---------- обновление (пункт в меню Tampermonkey) ---------- */
+
+  function cmpVersions(a, b) {
+    const x = String(a).split('.').map(n => parseInt(n, 10) || 0);
+    const y = String(b).split('.').map(n => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) {
+      const d = (x[i] || 0) - (y[i] || 0);
+      if (d) return d > 0 ? 1 : -1;
+    }
+    return 0;
+  }
+
+  function checkUpdate() {
+    const current = GM_info.script.version;
+    GM_xmlhttpRequest({
+      method: 'GET',
+      url: RAW + '?t=' + Date.now(),
+      nocache: true,
+      onload(r) {
+        const m = /@version\s+(\S+)/.exec(r.responseText || '');
+        if (!m) { alert('Не удалось определить версию на GitHub'); return; }
+        const latest = m[1];
+        if (cmpVersions(latest, current) > 0) {
+          if (confirm('Доступна версия ' + latest + ' (установлена ' + current + '). Обновить?')) {
+            GM_openInTab(RAW + '?t=' + Date.now(), { active: true });
+          }
+        } else {
+          alert('Установлена последняя версия (' + current + ')');
+        }
+      },
+      onerror() { alert('Не удалось проверить обновление'); },
+      ontimeout() { alert('Не удалось проверить обновление'); }
+    });
+  }
+
+  if (window.top === window && typeof GM_registerMenuCommand === 'function') {
+    GM_registerMenuCommand('Обновить', checkUpdate);
   }
 
   /* ---------- перехват ---------- */
