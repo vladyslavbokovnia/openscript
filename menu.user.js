@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.2.1
+// @version      1.3.0
 // @description  Круговое контекстное меню без текста: озвучка (подсветка, плавная прокрутка, переход тапом), открыть ссылку в новой вкладке, стандартное меню
 // @license      MIT
 // @match        *://*/*
@@ -25,11 +25,11 @@
 
   const RADIUS = 62;          // радиус круга до центров кнопок
   const BTN = 52;             // размер кнопки
+  const ICON = 40;            // размер значка внутри кнопки
   const BYPASS_MS = 20000;    // сколько "стандартное меню" ждёт следующего долгого нажатия
   const MAX_CHARS = 400000;   // лимит текста страницы для озвучки
   const MAX_CHUNK = 220;      // максимальная длина одного фрагмента речи
   const CPS = 15;             // символов в секунду (оценка, если нет событий слов)
-  const SCROLL_TAU = 0.9;     // постоянная сглаживания прокрутки, секунды (больше = мягче)
   const SCROLL_MAX = 2400;    // максимальная скорость прокрутки, px/с
   const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
 
@@ -52,6 +52,17 @@
     try { GM_addValueChangeListener(k, (n, o, nv) => { cfg[k] = !!nv; }); } catch (e) {}
   }
 
+  // Плавность прокрутки: чем больше значение, тем мягче текст догоняет озвучку
+  const SMOOTH = [
+    { v: 0.35, n: 'быстрая' },
+    { v: 0.9, n: 'обычная' },
+    { v: 1.6, n: 'мягкая' },
+    { v: 2.5, n: 'очень мягкая' }
+  ];
+  let smoothIdx = 1;
+  try { smoothIdx = Math.max(0, Math.min(SMOOTH.length - 1, GM_getValue('smoothIdx', 1) | 0)); } catch (e) {}
+  try { GM_addValueChangeListener('smoothIdx', (n, o, nv) => { smoothIdx = Math.max(0, Math.min(SMOOTH.length - 1, nv | 0)); }); } catch (e) {}
+
   let menuIds = [];
   function buildMenu() {
     if (window.top !== window || typeof GM_registerMenuCommand !== 'function') return;
@@ -66,13 +77,18 @@
         buildMenu();
       }, { autoClose: false }));
     }
+    menuIds.push(GM_registerMenuCommand('〰️ Плавность прокрутки: ' + SMOOTH[smoothIdx].n, () => {
+      smoothIdx = (smoothIdx + 1) % SMOOTH.length;
+      try { GM_setValue('smoothIdx', smoothIdx); } catch (e) {}
+      buildMenu();
+    }, { autoClose: false }));
     menuIds.push(GM_registerMenuCommand('🔄 Обновить', checkUpdate));
   }
 
   /* ---------- состояние ---------- */
 
   let host = null, root = null, wrap = null, badge = null, badgeTimer = 0;
-  let isOpen = false;
+  let isOpen = false, openedAt = 0;
   let cx = 0, cy = 0;
   let snapshot = null;
   let bypassUntil = 0;
@@ -84,16 +100,17 @@
     doc: null, chunks: [], gen: 0,
     ci: 0, cs: 0, ce: 0, t0: 0,
     lastIdx: 0, boundaryAt: 0, resumeIdx: 0,
-    raf: 0, lastTs: 0, noScrollUntil: 0, sy: null, sp: null,
+    raf: 0, lastTs: 0, noScrollUntil: 0, ownScrollAt: 0, sy: null, sp: null,
     tmp: null
   };
 
+  // viewBox обрезан до самого рисунка, поэтому значки крупные и без лишних полей
   const ICONS = {
-    read: '<svg viewBox="0 0 24 24"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M15.5 8.5a5 5 0 010 7M18 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
-    pause: '<svg viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1.2"/><rect x="14" y="5" width="4" height="14" rx="1.2"/></svg>',
-    stop: '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg>',
-    menu: '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.2"/><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="19" r="2.2"/></svg>',
-    newtab: '<svg viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>'
+    read: '<svg viewBox="2 2 20 20"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M15.5 8.5a5 5 0 010 7M18 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+    pause: '<svg viewBox="2 2 20 20"><rect x="5.5" y="4" width="5" height="16" rx="1.4"/><rect x="13.5" y="4" width="5" height="16" rx="1.4"/></svg>',
+    stop: '<svg viewBox="2 2 20 20"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
+    menu: '<svg viewBox="2 2 20 20"><circle cx="12" cy="5" r="2.6"/><circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="19" r="2.6"/></svg>',
+    newtab: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>'
   };
 
   /* ---------- подсветка (CSS Custom Highlight API) ---------- */
@@ -135,16 +152,16 @@
           box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;touch-action:manipulation;
           -webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none;
           transform:translate(-50%,-50%) scale(.2);transition:transform .18s cubic-bezier(.2,1.4,.4,1),opacity .15s}
-        .btn svg{width:26px;height:26px;fill:currentColor;pointer-events:none}
+        .btn svg{width:${ICON}px;height:${ICON}px;fill:currentColor;pointer-events:none}
         .btn:active{filter:brightness(1.25)}
         .open .disc{transform:translate(-50%,-50%) scale(1);opacity:1}
         .open .dot{opacity:1}
         .open .btn{opacity:1;transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1)}
-        .badge{position:fixed;right:16px;bottom:16px;width:42px;height:42px;border-radius:50%;background:#48484a;color:#fff;
+        .badge{position:fixed;right:16px;bottom:16px;width:46px;height:46px;border-radius:50%;background:#48484a;color:#fff;
           display:none;align-items:center;justify-content:center;pointer-events:none;
           box-shadow:0 0 0 0 rgba(255,255,255,.6);animation:pulse 1.4s infinite}
         .badge.on{display:flex}
-        .badge svg{width:22px;height:22px;fill:currentColor}
+        .badge svg{width:30px;height:30px;fill:currentColor}
         @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55)}70%{box-shadow:0 0 0 14px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
       </style>
       <div class="wrap"><div class="disc"></div><div class="dot"></div></div>
@@ -179,6 +196,7 @@
     wrap.style.left = Math.min(Math.max(x, m), innerWidth - m) + 'px';
     wrap.style.top = Math.min(Math.max(y, m), innerHeight - m) + 'px';
 
+    wrap.classList.remove('open');
     wrap.querySelectorAll('.btn').forEach(b => b.remove());
     const n = items.length;
     const step = n <= 2 ? 90 : n === 3 ? 70 : 60;
@@ -197,7 +215,8 @@
 
     snapshot = currentRange();
     isOpen = true;
-    requestAnimationFrame(() => requestAnimationFrame(() => wrap.classList.add('open')));
+    openedAt = performance.now();
+    requestAnimationFrame(() => requestAnimationFrame(() => { if (isOpen) wrap.classList.add('open'); }));
   }
 
   function close() {
@@ -504,7 +523,8 @@
     const dt = S.lastTs ? Math.min(0.05, Math.max(0.001, (ts - S.lastTs) / 1000)) : 0.016;
     S.lastTs = ts;
 
-    if (S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil) { S.sy = null; return; }
+    // пока открыто круговое меню, страницу не двигаем: иначе меню "уезжает" и закрывается
+    if (isOpen || S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil) { S.sy = null; return; }
 
     try {
       const i = focusIdx();
@@ -522,12 +542,13 @@
       if (S.sy == null || Math.abs(S.sy - cur) > 3) S.sy = cur;
 
       const dy = rc.top - (top + h * 0.33);
-      const k = 1 - Math.exp(-dt / SCROLL_TAU);          // экспоненциальное сглаживание, не зависит от FPS
+      const k = 1 - Math.exp(-dt / SMOOTH[smoothIdx].v);   // экспоненциальное сглаживание, не зависит от FPS
       const lim = SCROLL_MAX * dt;
       const step = Math.max(-lim, Math.min(lim, dy * k));
       if (Math.abs(step) < 0.01) return;
 
       S.sy += step;
+      S.ownScrollAt = performance.now();
       // behavior:'instant' — чтобы CSS scroll-behavior:smooth на сайте не добавлял свою анимацию
       if (sp) sp.scrollTo({ top: S.sy, behavior: 'instant' });
       else window.scrollTo({ top: S.sy, left: window.scrollX, behavior: 'instant' });
@@ -654,6 +675,12 @@
     jumpAt(e.clientX, e.clientY);
   }, true);
 
-  window.addEventListener('scroll', () => close(), { passive: true, capture: true });
+  // закрываем меню только от прокрутки пальцем, а не от нашей автопрокрутки озвучки
+  window.addEventListener('scroll', () => {
+    const now = performance.now();
+    if (now - S.ownScrollAt < 200 || now - openedAt < 500) return;
+    close();
+  }, { passive: true, capture: true });
+
   window.addEventListener('pagehide', () => stopReading());
 })();
