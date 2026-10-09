@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.2
+// @version      1.2.1
 // @description  Круговое контекстное меню без текста: озвучка (подсветка, плавная прокрутка, переход тапом), открыть ссылку в новой вкладке, стандартное меню
 // @license      MIT
 // @match        *://*/*
@@ -29,6 +29,8 @@
   const MAX_CHARS = 400000;   // лимит текста страницы для озвучки
   const MAX_CHUNK = 220;      // максимальная длина одного фрагмента речи
   const CPS = 15;             // символов в секунду (оценка, если нет событий слов)
+  const SCROLL_TAU = 0.9;     // постоянная сглаживания прокрутки, секунды (больше = мягче)
+  const SCROLL_MAX = 2400;    // максимальная скорость прокрутки, px/с
   const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
 
   /* ---------- настройки (выключатели) ---------- */
@@ -82,7 +84,7 @@
     doc: null, chunks: [], gen: 0,
     ci: 0, cs: 0, ce: 0, t0: 0,
     lastIdx: 0, boundaryAt: 0, resumeIdx: 0,
-    raf: 0, noScrollUntil: 0, acc: 0, sp: null,
+    raf: 0, lastTs: 0, noScrollUntil: 0, sy: null, sp: null,
     tmp: null
   };
 
@@ -470,7 +472,7 @@
     S.gen++;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'idle';
-    S.doc = null; S.chunks = []; S.sp = null;
+    S.doc = null; S.chunks = []; S.sp = null; S.sy = null;
     if (HL) { HL.sent.clear(); HL.word.clear(); }
   }
 
@@ -492,32 +494,43 @@
   }
 
   function startLoop() {
-    if (!S.raf) S.raf = requestAnimationFrame(loop);
+    if (!S.raf) { S.lastTs = 0; S.raf = requestAnimationFrame(loop); }
   }
 
-  function loop() {
+  function loop(ts) {
     if (S.state === 'idle') { S.raf = 0; return; }
     S.raf = requestAnimationFrame(loop);
-    if (S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil) return;
+
+    const dt = S.lastTs ? Math.min(0.05, Math.max(0.001, (ts - S.lastTs) / 1000)) : 0.016;
+    S.lastTs = ts;
+
+    if (S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil) { S.sy = null; return; }
+
     try {
       const i = focusIdx();
       S.tmp = rangeOf(i, i + 1, S.tmp || document.createRange());
       let rc = S.tmp.getClientRects()[0];
       if (!rc || (!rc.width && !rc.height)) rc = S.tmp.getBoundingClientRect();
       if (!rc || (!rc.width && !rc.height)) return;
+
       const sp = S.sp;
       let top = 0, h = innerHeight;
       if (sp) { const r = sp.getBoundingClientRect(); top = r.top; h = sp.clientHeight; }
+
+      // собственная дробная позиция прокрутки: без округления до целых px — иначе рывки
+      const cur = sp ? sp.scrollTop : window.scrollY;
+      if (S.sy == null || Math.abs(S.sy - cur) > 3) S.sy = cur;
+
       const dy = rc.top - (top + h * 0.33);
-      if (Math.abs(dy) < 18) { S.acc = 0; return; }
-      let step = dy * 0.07;
-      if (Math.abs(step) < 0.6) step = dy > 0 ? 0.6 : -0.6;
-      step = Math.max(-40, Math.min(40, step));
-      S.acc += step;
-      const px = Math.trunc(S.acc);
-      if (!px) return;
-      S.acc -= px;
-      if (sp) sp.scrollTop += px; else window.scrollBy(0, px);
+      const k = 1 - Math.exp(-dt / SCROLL_TAU);          // экспоненциальное сглаживание, не зависит от FPS
+      const lim = SCROLL_MAX * dt;
+      const step = Math.max(-lim, Math.min(lim, dy * k));
+      if (Math.abs(step) < 0.01) return;
+
+      S.sy += step;
+      // behavior:'instant' — чтобы CSS scroll-behavior:smooth на сайте не добавлял свою анимацию
+      if (sp) sp.scrollTo({ top: S.sy, behavior: 'instant' });
+      else window.scrollTo({ top: S.sy, left: window.scrollX, behavior: 'instant' });
     } catch (e) {}
   }
 
