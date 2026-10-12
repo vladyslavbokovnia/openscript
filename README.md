@@ -1,10 +1,10 @@
 # openscript
 
 <!-- AUTO-INSTALL-LINKS:START -->
-- [Меню](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js)
+- [menu](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js)
 - [SUBVOICE](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js)
-- [te_phantom_opera](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js)
-- [YouTube TTS](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js)
+- [Phantom Opera](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js)
+- [📢 YouTube TTS](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js)
 <!-- AUTO-INSTALL-LINKS:END -->
 Userscripts для Tampermonkey (Android, Kiwi). Чтобы установить, откройте ссылку «Установить»
 в браузере с Tampermonkey — он сам предложит установку. Нужна именно raw-ссылка (не страница
