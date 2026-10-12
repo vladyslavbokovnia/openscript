@@ -1,0 +1,56 @@
+name: Update install links
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '*.user.js'
+      - '.github/workflows/update-script-links.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  update-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Regenerate install links
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path(".")
+          start = "<!-- AUTO-INSTALL-LINKS:START -->"
+          end = "<!-- AUTO-INSTALL-LINKS:END -->"
+          links = []
+
+          for path in sorted(root.glob("*.user.js"), key=lambda p: p.name.lower()):
+              source = path.read_text(encoding="utf-8", errors="replace")
+              match = re.search(r'^\\s*//\\s*@name\\s+(.+?)\\s*$', source, re.M)
+              label = match.group(1).strip() if match else path.name.removesuffix(".user.js")
+              url = f"https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/{path.name}"
+              label = label.replace("[", "\\[").replace("]", "\\]")
+              links.append(f"- [{label}]({url})")
+
+          readme = Path("README.md")
+          content = readme.read_text(encoding="utf-8")
+          pattern = re.compile(re.escape(start) + r"[\\s\\S]*?" + re.escape(end))
+          section = start + "\\n" + "\\n".join(links) + "\\n" + end
+          if not pattern.search(content):
+              raise SystemExit("README install-link markers are missing")
+          readme.write_text(pattern.sub(lambda _: section, content, count=1), encoding="utf-8")
+          PY
+      - name: Commit updated README
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- README.md; then
+            git add README.md
+            git commit -m "Update script install links"
+            git push
+          fi
