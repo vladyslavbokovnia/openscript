@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.3.0
-// @description  Круговое контекстное меню без текста: озвучка (подсветка, плавная прокрутка, переход тапом), открыть ссылку в новой вкладке, стандартное меню
+// @version      1.4.1
+// @description  Круговое контекстное меню без текста: озвучка (подсветка, плавная прокрутка, переход тапом), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально), открыть ссылку в новой вкладке, стандартное меню
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -32,24 +32,63 @@
   const CPS = 15;             // символов в секунду (оценка, если нет событий слов)
   const SCROLL_MAX = 2400;    // максимальная скорость прокрутки, px/с
   const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
+  const IS_TOP = window.top === window;   // геймпад, наклон и медиа-кнопки работают только в самой странице, не во фреймах
+
+  // Кнопки геймпада (стандартная раскладка Xbox: 0=A 1=B 2=X 3=Y 4=LB 5=RB, 12-15=крестовина).
+  // Если у геймпада другая нумерация — в меню Tampermonkey включите «Определить кнопки геймпада»
+  // (на экране покажется номер нажатой кнопки) и поправьте номера здесь.
+  const PAD = {
+    play: 0,        // A — пауза / продолжить / читать с экрана
+    stop: 1,        // B — стоп
+    field: 2,       // X — прочитать поле ввода (ещё раз — стоп)
+    here: 3,        // Y — читать с места, которое сейчас на экране
+    parPrev: 4,     // LB — предыдущий абзац
+    parNext: 5,     // RB — следующий абзац
+    rateUp: 12,     // ↑ — быстрее
+    rateDown: 13,   // ↓ — медленнее
+    prev: 14,       // ← — предыдущее предложение
+    next: 15        // → — следующее предложение
+  };
+  const PAD_REPEAT = { 12: 220, 13: 220, 14: 400, 15: 400 };   // автоповтор при удержании, мс
+  const PAD_REPEAT_DELAY = 450;                                  // через сколько мс удержания начинается автоповтор
+
+  // Чтение поля ввода, когда телефон держат строго вертикально (экраном к себе, верхом вверх)
+  const TILT = {
+    center: 90,     // угол beta при вертикальном положении
+    tol: 11,        // допуск, градусов (80…100)
+    arm: 30,        // чтобы жест сработал, телефон сначала должен отклониться от вертикали хотя бы на столько
+    hold: 800,      // сколько мс держать неподвижно
+    cooldown: 3000, // пауза между срабатываниями
+    typing: 1500    // не срабатывать, пока вы печатаете (мс после последнего ввода)
+  };
+
+  // Вибро при старте чтения поля ввода. Веб-API не умеет менять силу мотора, только длительность и ритм:
+  // чем длиннее импульсы, тем сильнее ощущается. Формат: [вибро, пауза, вибро, ...] в мс.
+  const FIELD_BUZZ = [220, 70, 220, 70, 320];
+
+  const RATES = [0.7, 0.85, 1, 1.15, 1.3, 1.5, 1.75, 2];
+  const fmt = r => (Math.round(r * 100) / 100) + '×';
 
   /* ---------- настройки (выключатели) ---------- */
 
-  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, link: true };
+  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, link: true, pad: true, media: true, tilt: true };
   const LABELS = {
     read: 'Озвучка',
     hlSentence: 'Подсветка предложения',
     hlWord: 'Подсветка слова',
     scroll: 'Плавная прокрутка',
     tap: 'Переход по тексту тапом',
-    link: 'Открыть ссылку в новой вкладке'
+    link: 'Открыть ссылку в новой вкладке',
+    pad: 'Геймпад',
+    media: 'Медиа-команды (наушники, шторка)',
+    tilt: 'Читать поле: телефон вертикально'
   };
   const cfg = {};
   for (const k of Object.keys(DEF)) {
     let v = DEF[k];
     try { v = GM_getValue(k, DEF[k]); } catch (e) {}
     cfg[k] = !!v;
-    try { GM_addValueChangeListener(k, (n, o, nv) => { cfg[k] = !!nv; }); } catch (e) {}
+    try { GM_addValueChangeListener(k, (n, o, nv, remote) => { cfg[k] = !!nv; if (remote) onCfgChange(k); }); } catch (e) {}
   }
 
   // Плавность прокрутки: чем больше значение, тем мягче текст догоняет озвучку
@@ -63,6 +102,12 @@
   try { smoothIdx = Math.max(0, Math.min(SMOOTH.length - 1, GM_getValue('smoothIdx', 1) | 0)); } catch (e) {}
   try { GM_addValueChangeListener('smoothIdx', (n, o, nv) => { smoothIdx = Math.max(0, Math.min(SMOOTH.length - 1, nv | 0)); }); } catch (e) {}
 
+  // Скорость речи (меняется кнопками геймпада ↑↓ или из меню)
+  let rate = 1;
+  try { rate = Math.max(0.5, Math.min(3, Number(GM_getValue('rate', 1)) || 1)); } catch (e) {}
+  try { GM_addValueChangeListener('rate', (n, o, nv) => { rate = Math.max(0.5, Math.min(3, Number(nv) || 1)); }); } catch (e) {}
+  let padDebug = false;   // режим «показывать номер нажатой кнопки»
+
   let menuIds = [];
   function buildMenu() {
     if (window.top !== window || typeof GM_registerMenuCommand !== 'function') return;
@@ -72,14 +117,21 @@
       menuIds.push(GM_registerMenuCommand((cfg[k] ? '✅ ' : '⬜ ') + LABELS[k], () => {
         cfg[k] = !cfg[k];
         try { GM_setValue(k, cfg[k]); } catch (e) {}
-        if (k === 'read' && !cfg.read) stopReading();
-        if (k === 'hlSentence' || k === 'hlWord') repaint();
+        onCfgChange(k);
         buildMenu();
       }, { autoClose: false }));
     }
     menuIds.push(GM_registerMenuCommand('〰️ Плавность прокрутки: ' + SMOOTH[smoothIdx].n, () => {
       smoothIdx = (smoothIdx + 1) % SMOOTH.length;
       try { GM_setValue('smoothIdx', smoothIdx); } catch (e) {}
+      buildMenu();
+    }, { autoClose: false }));
+    menuIds.push(GM_registerMenuCommand('⏩ Скорость озвучки: ' + fmt(rate), () => {
+      setRate(RATES.find(v => v > rate + 0.001) || RATES[0], true);
+      buildMenu();
+    }, { autoClose: false }));
+    menuIds.push(GM_registerMenuCommand(padDebug ? '🎮 Номера кнопок на экране: вкл' : '🎮 Определить кнопки геймпада', () => {
+      padDebug = !padDebug;
       buildMenu();
     }, { autoClose: false }));
     menuIds.push(GM_registerMenuCommand('🔄 Обновить', checkUpdate));
@@ -101,7 +153,8 @@
     ci: 0, cs: 0, ce: 0, t0: 0,
     lastIdx: 0, boundaryAt: 0, resumeIdx: 0,
     raf: 0, lastTs: 0, noScrollUntil: 0, ownScrollAt: 0, sy: null, sp: null,
-    tmp: null
+    tmp: null,
+    lang: null            // язык речи для поля ввода (null — по языку страницы)
   };
 
   // viewBox обрезан до самого рисунка, поэтому значки крупные и без лишних полей
@@ -162,10 +215,15 @@
           box-shadow:0 0 0 0 rgba(255,255,255,.6);animation:pulse 1.4s infinite}
         .badge.on{display:flex}
         .badge svg{width:30px;height:30px;fill:currentColor}
+        .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:80vw;padding:8px 16px;border-radius:18px;
+          background:rgba(30,30,32,.9);color:#fff;font:600 15px/1.25 system-ui,sans-serif;text-align:center;
+          opacity:0;pointer-events:none;transition:opacity .15s}
+        .toast.on{opacity:1}
         @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55)}70%{box-shadow:0 0 0 14px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
       </style>
       <div class="wrap"><div class="disc"></div><div class="dot"></div></div>
-      <div class="badge">${ICONS.menu}</div>`;
+      <div class="badge">${ICONS.menu}</div>
+      <div class="toast"></div>`;
     wrap = root.querySelector('.wrap');
     badge = root.querySelector('.badge');
     (document.documentElement || document).appendChild(host);
@@ -395,13 +453,13 @@
   /* ---------- подсветка ---------- */
 
   function paintSentence(a, b) {
-    if (!HL) return;
+    if (!HL || (S.doc && S.doc.field)) return;
     HL.sent.clear(); HL.word.clear();
     if (!cfg.hlSentence) return;
     try { HL.sent.add(rangeOf(a, b)); } catch (e) {}
   }
   function paintWord(i, len) {
-    if (!HL) return;
+    if (!HL || (S.doc && S.doc.field)) return;
     HL.word.clear();
     if (!cfg.hlWord) return;
     try { HL.word.add(rangeOf(i, i + (len > 0 ? len : wordLenAt(i)))); } catch (e) {}
@@ -423,6 +481,7 @@
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'playing';
     startLoop();
+    mediaSync();
     setTimeout(() => playChunk(my, ci, idx), 60);
   }
 
@@ -434,10 +493,12 @@
     const text = S.doc.text;
     S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = performance.now();
     S.lastIdx = s; S.boundaryAt = 0;
+    mediaPosition();
     try { S.sp = scrollParentOf(pos(s).node.parentElement); } catch (e) { S.sp = null; }
 
     const u = new SpeechSynthesisUtterance(text.slice(s, c.e));
-    u.lang = document.documentElement.lang || navigator.language || 'ru-RU';
+    u.lang = S.lang || document.documentElement.lang || navigator.language || 'ru-RU';
+    u.rate = rate;
     u.onboundary = ev => {
       if (my !== S.gen) return;
       if (ev.name && ev.name !== 'word') return;
@@ -449,6 +510,11 @@
     u.onerror = ev => {
       if (my !== S.gen) return;
       if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
+      if (ev && ev.error === 'not-allowed') {      // браузер требует касания страницы — не перебираем все фрагменты
+        stopReading();
+        toast('Браузер не разрешил озвучку: коснитесь экрана');
+        return;
+      }
       playChunk(my, ci + 1);
     };
     keep.push(u);
@@ -480,6 +546,7 @@
     try { speechSynthesis.cancel(); } catch (e) {}
     S.resumeIdx = S.boundaryAt ? S.lastIdx : S.cs;
     S.state = 'paused';
+    mediaSync();
   }
 
   function resumeReading() {
@@ -491,8 +558,9 @@
     S.gen++;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'idle';
-    S.doc = null; S.chunks = []; S.sp = null; S.sy = null;
+    S.doc = null; S.chunks = []; S.sp = null; S.sy = null; S.lang = null;
     if (HL) { HL.sent.clear(); HL.word.clear(); }
+    mediaTeardown();
   }
 
   /* ---------- плавная непрерывная прокрутка ---------- */
@@ -508,7 +576,7 @@
   function focusIdx() {
     const now = performance.now();
     if (S.boundaryAt && now - S.boundaryAt < 2500) return S.lastIdx;
-    const est = S.cs + Math.floor((now - S.t0) / 1000 * CPS);
+    const est = S.cs + Math.floor((now - S.t0) / 1000 * CPS * rate);
     return Math.min(S.ce - 1, Math.max(S.cs, est));
   }
 
@@ -524,7 +592,7 @@
     S.lastTs = ts;
 
     // пока открыто круговое меню, страницу не двигаем: иначе меню "уезжает" и закрывается
-    if (isOpen || S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil) { S.sy = null; return; }
+    if (isOpen || S.state !== 'playing' || !cfg.scroll || performance.now() < S.noScrollUntil || (S.doc && S.doc.field)) { S.sy = null; return; }
 
     try {
       const i = focusIdx();
@@ -580,6 +648,404 @@
     } catch (e) { return; }
     S.noScrollUntil = 0;
     speakFrom(idx);
+  }
+
+  /* ---------- подсказка на экране и вибрация ---------- */
+
+  let toastEl = null, toastTimer = 0;
+  function toast(msg, ms) {
+    try {
+      ensureHost();
+      toastEl = toastEl || root.querySelector('.toast');
+      toastEl.textContent = msg;
+      toastEl.classList.add('on');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove('on'), ms || 1300);
+    } catch (e) {}
+  }
+  const buzz = ms => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch (e) {} };
+
+  function onCfgChange(k) {
+    if (k === 'read' && !cfg.read) stopReading();
+    if (k === 'hlSentence' || k === 'hlWord') repaint();
+    if (k === 'pad') { if (cfg.pad) { if (anyPad()) padStart(); } else padStop(); }
+    if (k === 'media') { if (cfg.media) mediaSync(); else mediaTeardown(); }
+    if (k === 'tilt') { if (cfg.tilt) { if (lastField) tiltStart(); } else tiltStop(); }
+  }
+
+  /* ---------- скорость речи ---------- */
+
+  let rateTimer = 0;
+  function setRate(r, quiet) {
+    r = Math.max(0.5, Math.min(3, Math.round(r * 20) / 20));
+    if (r === rate) return;
+    rate = r;
+    try { GM_setValue('rate', rate); } catch (e) {}
+    if (!quiet) toast(fmt(rate));
+    if (S.state === 'playing') {
+      // новую скорость применяем с текущего слова; при быстром удержании кнопки — один раз в конце
+      clearTimeout(rateTimer);
+      rateTimer = setTimeout(() => { if (S.state === 'playing') speakFrom(S.boundaryAt ? S.lastIdx : S.cs); }, 350);
+    }
+  }
+
+  /* ---------- управление чтением: пауза, шаги по предложениям и абзацам ---------- */
+
+  function togglePlay() {
+    if (S.state === 'playing') pauseReading(); else mediaPlay();
+  }
+
+  function mediaPlay() {
+    if (S.state === 'paused') resumeReading();
+    else if (S.state === 'idle') startFromViewport();
+  }
+
+  // Читать с того места, которое сейчас на экране
+  function startFromViewport() {
+    if (!cfg.read || !('speechSynthesis' in window)) return;
+    stopReading();
+    S.doc = buildDoc();
+    S.chunks = makeChunks(S.doc.text);
+    if (!S.chunks.length) { S.doc = null; toast('На странице нет текста'); return; }
+    speakFrom(viewportIdx());
+  }
+
+  function viewportIdx() {
+    const t = S.doc.text;
+    const wordStart = idx => { while (idx > 0 && /[\p{L}\p{N}_]/u.test(t[idx - 1])) idx--; return idx; };
+    // 1) пробуем найти текст в нескольких точках экрана сверху вниз
+    for (const fy of [0.1, 0.2, 0.3, 0.4, 0.5, 0.62, 0.74, 0.86]) {
+      for (const fx of [0.5, 0.25, 0.75, 0.1, 0.9]) {
+        const c = caretAt(innerWidth * fx, innerHeight * fy);
+        if (!c || !c.node || c.node.nodeType !== 3 || !S.doc.map.has(c.node)) continue;
+        const idx = toGlobal(c.node, c.offset);
+        if (idx != null) return wordStart(idx);
+      }
+    }
+    // 2) запасной путь: первый текстовый узел, который заканчивается ниже верхнего края экрана
+    try {
+      const sg = S.doc.segs, r = document.createRange();
+      let lo = 0, hi = sg.length - 1, ans = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        r.selectNodeContents(sg[mid].node);
+        if (r.getBoundingClientRect().bottom > 0) { ans = mid; hi = mid - 1; } else lo = mid + 1;
+      }
+      if (ans >= 0) return sg[ans].g;
+    } catch (e) {}
+    return 0;
+  }
+
+  function jumpChunk(ci) {
+    if (ci >= S.chunks.length) { stopReading(); return; }
+    ci = Math.max(0, ci);
+    S.ci = ci; S.t0 = performance.now(); S.noScrollUntil = 0;   // сразу, чтобы быстрые повторные нажатия считались от нового места
+    buzz(15);
+    speakFrom(S.chunks[ci].s);
+  }
+
+  function skipSentence(d) {
+    if (S.state === 'idle' || !S.chunks.length) return;
+    // «назад» через пару секунд после начала фразы — сначала в её начало, как в плеерах
+    const restart = d < 0 && S.state === 'playing' && performance.now() - S.t0 > 2500;
+    jumpChunk(restart ? S.ci : S.ci + d);
+  }
+
+  function paraStart(i) {
+    const c = S.chunks[i];
+    if (!c) return false;
+    const t = S.doc.text;
+    let k = c.s - 1;
+    while (k >= 0 && t[k] === ' ') k--;
+    return k < 0 || t[k] === '\n';
+  }
+
+  function skipPara(d) {
+    if (S.state === 'idle' || !S.chunks.length) return;
+    let i = S.ci;
+    if (d > 0) {
+      i++;
+      while (i < S.chunks.length && !paraStart(i)) i++;
+    } else {
+      if (paraStart(i)) i--;
+      while (i > 0 && !paraStart(i)) i--;
+    }
+    jumpChunk(i);
+  }
+
+  function seekToTime(sec) {
+    if (S.state === 'idle' || !S.doc || !(sec >= 0)) return;
+    const idx = Math.min(S.doc.text.length - 1, Math.round(sec * CPS * rate));
+    let ci = chunkAt(idx);
+    if (ci < 0) ci = S.chunks.length - 1;
+    jumpChunk(ci);
+  }
+
+  /* ---------- поле ввода ---------- */
+
+  let lastField = null;
+
+  function deepActive() {
+    let a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+
+  function editableKind(el) {
+    if (!el || el.nodeType !== 1) return null;
+    if (el.tagName === 'TEXTAREA') return 'value';
+    if (el.tagName === 'INPUT') {
+      const t = (el.type || 'text').toLowerCase();
+      if (!/^(text|search|url|tel|email)$/.test(t)) return null;                       // пароли и прочее не читаем
+      if (/password|cc-|one-time-code/i.test(el.getAttribute('autocomplete') || '')) return null;
+      return 'value';
+    }
+    return el.isContentEditable ? 'rich' : null;
+  }
+
+  function fieldTarget() {
+    const a = deepActive();
+    if (editableKind(a)) return a;
+    if (lastField && lastField.isConnected && editableKind(lastField)) return lastField;
+    return null;
+  }
+
+  function fieldText(el) {
+    if (editableKind(el) === 'value') {
+      let a = null, b = null;
+      try { a = el.selectionStart; b = el.selectionEnd; } catch (e) {}
+      const v = el.value || '';
+      return (a != null && b != null && b > a) ? v.slice(a, b) : v;      // выделено — читаем выделенное
+    }
+    const s = getSelection();
+    if (s && !s.isCollapsed && el.contains(s.anchorNode)) return s.toString();
+    return el.innerText || el.textContent || '';
+  }
+
+  // Прочитать поле ввода (в фокусе или то, где вы печатали последним)
+  function readField(silent) {
+    if (!cfg.read || !('speechSynthesis' in window)) return;
+    const el = fieldTarget();
+    if (!el) { if (!silent) toast('Нет поля ввода'); return; }
+    const raw = fieldText(el).replace(/\r/g, '').replace(/[^\S\n]+/g, ' ').trim();
+    if (!raw) { if (!silent) toast('Поле пустое'); return; }
+    const chunks = makeChunks(raw);
+    if (!chunks.length) { if (!silent) toast('Нечего читать'); return; }
+    stopReading();
+    S.doc = { text: raw, segs: [], map: new Map(), field: true };
+    S.chunks = chunks;
+    const cyr = (raw.match(/[Ѐ-ӿ]/g) || []).length;
+    const lat = (raw.match(/[A-Za-z]/g) || []).length;
+    S.lang = cyr > lat ? (/[іїєґІЇЄҐ]/.test(raw) ? 'uk-UA' : 'ru-RU') : null;
+    buzz(FIELD_BUZZ);
+    speakFrom(0);
+  }
+
+  window.addEventListener('focusin', e => {
+    const t = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (editableKind(t)) { lastField = t; if (cfg.tilt) tiltStart(); }
+  }, true);
+
+  /* ---------- медиа-команды: кнопки наушников, шторка уведомлений, часы ---------- */
+
+  // Chrome отдаёт media-кнопки только странице, где «играет» звук. Озвучка (speechSynthesis) таким звуком
+  // не считается, поэтому на время чтения крутится беззвучная дорожка — она и делает страницу получателем кнопок.
+
+  const MS = IS_TOP && navigator.mediaSession ? navigator.mediaSession : null;
+  const MS_ACTIONS = {
+    play: () => mediaPlay(),
+    pause: () => pauseReading(),
+    stop: () => stopReading(),
+    previoustrack: () => skipSentence(-1),
+    nexttrack: () => skipSentence(1),
+    seekbackward: () => skipPara(-1),
+    seekforward: () => skipPara(1),
+    seekto: d => seekToTime(d && d.seekTime)
+  };
+  let silent = null, ownPause = false, msOn = false;
+
+  function wavUrl(asData) {
+    const hz = 8000, n = hz * 10;                     // 10 с тишины: совсем короткие ролики Chrome за медиа не считает
+    const b = new Uint8Array(44 + n);
+    const dv = new DataView(b.buffer);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) b[o + i] = s.charCodeAt(i); };
+    str(0, 'RIFF'); dv.setUint32(4, 36 + n, true); str(8, 'WAVE'); str(12, 'fmt ');
+    dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+    dv.setUint32(24, hz, true); dv.setUint32(28, hz, true); dv.setUint16(32, 1, true); dv.setUint16(34, 8, true);
+    str(36, 'data'); dv.setUint32(40, n, true); b.fill(128, 44);       // 8 бит без знака: 128 — тишина
+    if (!asData) return URL.createObjectURL(new Blob([b], { type: 'audio/wav' }));
+    let s = '';
+    for (let i = 0; i < b.length; i += 8192) s += String.fromCharCode.apply(null, b.subarray(i, i + 8192));
+    return 'data:audio/wav;base64,' + btoa(s);
+  }
+
+  function silentEl() {
+    if (silent) return silent;
+    silent = new Audio();
+    silent.loop = true;
+    silent.setAttribute('playsinline', '');
+    try { silent.src = wavUrl(false); } catch (e) { try { silent.src = wavUrl(true); } catch (e2) {} }
+    let triedData = false;
+    silent.addEventListener('error', () => {            // сайт запретил blob: в media-src — пробуем data:
+      if (triedData) return;
+      triedData = true;
+      try { silent.src = wavUrl(true); silent.load(); if (S.state === 'playing') silent.play().catch(() => {}); } catch (e) {}
+    });
+    silent.addEventListener('pause', () => {
+      if (ownPause) { ownPause = false; return; }
+      if (S.state === 'playing') pauseReading();       // звук перехватил звонок или другое приложение
+    });
+    return silent;
+  }
+  function silentPlay() {
+    const a = silentEl();
+    if (a.paused) { const p = a.play(); if (p && p.catch) p.catch(() => {}); }
+  }
+  function silentPause() {
+    if (silent && !silent.paused) { ownPause = true; silent.pause(); }
+  }
+
+  function otherMediaPlaying() {
+    try {
+      return Array.from(document.querySelectorAll('video,audio')).some(m => m !== silent && !m.paused && !m.ended && m.readyState > 2);
+    } catch (e) { return false; }
+  }
+
+  function mediaSync() {
+    if (!MS || !cfg.media) return;
+    if (S.state === 'idle') { mediaTeardown(); return; }
+    if (!msOn) {
+      if (otherMediaPlaying()) return;                 // на странице играет видео или музыка — их кнопки не трогаем
+      msOn = true;
+      for (const a of Object.keys(MS_ACTIONS)) { try { MS.setActionHandler(a, MS_ACTIONS[a]); } catch (e) {} }
+    }
+    try {
+      MS.metadata = new MediaMetadata({
+        title: (S.doc && S.doc.field) ? 'Поле ввода' : (document.title || location.hostname),
+        artist: location.hostname,
+        album: 'Озвучка'
+      });
+    } catch (e) {}
+    if (S.state === 'playing') { silentPlay(); MS.playbackState = 'playing'; }
+    else { silentPause(); MS.playbackState = 'paused'; }
+    mediaPosition();
+  }
+
+  function mediaTeardown() {
+    silentPause();
+    if (!MS || !msOn) return;
+    msOn = false;
+    for (const a of Object.keys(MS_ACTIONS)) { try { MS.setActionHandler(a, null); } catch (e) {} }
+    try { MS.playbackState = 'none'; MS.metadata = null; } catch (e) {}
+  }
+
+  // Полоса перемотки в шторке: длительность оценивается по числу символов и скорости речи, поправка — на каждой фразе
+  function mediaPosition() {
+    if (!MS || !msOn || !S.doc || !MS.setPositionState) return;
+    try {
+      const cps = CPS * rate, dur = Math.max(1, S.doc.text.length / cps);
+      MS.setPositionState({ duration: dur, playbackRate: 1, position: Math.min(dur, S.cs / cps) });
+    } catch (e) {}
+  }
+
+  /* ---------- геймпад ---------- */
+
+  const padState = new Map();
+  let padTimer = 0;
+
+  function anyPad() {
+    try { return Array.from(navigator.getGamepads ? navigator.getGamepads() : []).some(g => g && g.connected); } catch (e) { return false; }
+  }
+  function padStart() {
+    if (!IS_TOP || !cfg.pad || padTimer) return;
+    padTimer = setInterval(padPoll, 40);
+  }
+  function padStop() {
+    clearInterval(padTimer);
+    padTimer = 0;
+    padState.clear();
+  }
+
+  function padPoll() {
+    if (document.hidden) return;
+    let list = [];
+    try { list = navigator.getGamepads ? Array.from(navigator.getGamepads()) : []; } catch (e) {}
+    const now = performance.now();
+    let any = false;
+    for (const gp of list) {
+      if (!gp || !gp.connected) continue;
+      any = true;
+      let st = padState.get(gp.index);
+      const fresh = !st;                                // кнопка, которой «разбудили» геймпад, действия не вызывает
+      if (fresh) { st = {}; padState.set(gp.index, st); }
+      gp.buttons.forEach((b, i) => {
+        const on = b.pressed || b.value > 0.6;
+        const d = st[i];
+        if (on) {
+          if (!d) { st[i] = { t: now, last: now }; if (!fresh) padPress(i); }
+          else if (PAD_REPEAT[i] && now - d.t > PAD_REPEAT_DELAY && now - d.last > PAD_REPEAT[i]) { d.last = now; padPress(i); }
+        } else if (d) delete st[i];
+      });
+    }
+    if (!any) padStop();
+  }
+
+  function padPress(i) {
+    if (padDebug) { toast('Кнопка ' + i, 900); return; }
+    switch (i) {
+      case PAD.play: if (cfg.read) togglePlay(); break;
+      case PAD.stop: stopReading(); break;
+      case PAD.field:
+        if (S.state !== 'idle' && S.doc && S.doc.field) stopReading(); else readField();
+        break;
+      case PAD.here: startFromViewport(); break;
+      case PAD.parPrev: skipPara(-1); break;
+      case PAD.parNext: skipPara(1); break;
+      case PAD.prev: skipSentence(-1); break;
+      case PAD.next: skipSentence(1); break;
+      case PAD.rateUp: setRate(rate + 0.1); break;
+      case PAD.rateDown: setRate(rate - 0.1); break;
+    }
+  }
+
+  /* ---------- чтение поля ввода: телефон вертикально ---------- */
+
+  // beta ≈ 90° — телефон стоит вертикально верхом вверх. По beta, а не по gamma: в вертикали
+  // углы alpha и gamma вырождаются и «прыгают», а beta остаётся устойчивой.
+  let tiltOn = false, tiltIn = 0, tiltArmed = false, tiltLast = 0, lastInputAt = 0;
+
+  function onTilt(e) {
+    if (!cfg.tilt || e.beta == null) return;
+    const ot = screen.orientation && screen.orientation.type;
+    if (ot && !/^portrait/.test(ot)) { tiltIn = 0; return; }       // только портрет
+    const dev = Math.abs(e.beta - TILT.center);
+    if (dev > TILT.arm) { tiltArmed = true; tiltIn = 0; return; }  // отклонились — жест «взведён»
+    if (dev > TILT.tol) { tiltIn = 0; return; }
+    if (!tiltArmed) return;                                        // уже стоял вертикально — не срабатываем
+    const now = performance.now();
+    if (!tiltIn) { tiltIn = now; return; }
+    if (now - tiltIn < TILT.hold || now - tiltLast < TILT.cooldown || now - lastInputAt < TILT.typing) return;
+    tiltArmed = false; tiltIn = 0; tiltLast = now;
+    if (!document.hidden) readField(true);
+  }
+  function tiltStart() {
+    if (!IS_TOP || tiltOn || !cfg.tilt) return;
+    tiltOn = true; tiltArmed = false; tiltIn = 0;
+    window.addEventListener('deviceorientation', onTilt, true);
+  }
+  function tiltStop() {
+    if (!tiltOn) return;
+    tiltOn = false;
+    window.removeEventListener('deviceorientation', onTilt, true);
+  }
+  window.addEventListener('input', () => { lastInputAt = performance.now(); }, true);
+
+  /* ---------- запуск геймпада ---------- */
+
+  if (IS_TOP) {
+    window.addEventListener('gamepadconnected', () => padStart());
+    window.addEventListener('gamepaddisconnected', () => { if (!anyPad()) padStop(); });
+    if (cfg.pad && anyPad()) padStart();
   }
 
   /* ---------- ссылка ---------- */
@@ -667,7 +1133,7 @@
 
   window.addEventListener('pointerup', e => {
     const d = down; down = null;
-    if (!d || !cfg.tap || S.state === 'idle' || isOpen) return;
+    if (!d || !cfg.tap || S.state === 'idle' || isOpen || (S.doc && S.doc.field)) return;
     if (host && e.composedPath().includes(host)) return;
     if (performance.now() - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10) return;
     const t = e.target;
