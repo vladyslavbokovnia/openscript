@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.4.2
-// @description  Круговое контекстное меню без текста: озвучка (подсветка, плавная прокрутка, переход тапом), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально), открыть ссылку в новой вкладке, стандартное меню
+// @version      1.5.0
+// @description  Круговое контекстное меню без текста: озвучка (старт и переход тапом по тексту, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально), открыть ссылку в новой вкладке, стандартное меню
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -71,13 +71,14 @@
 
   /* ---------- настройки (выключатели) ---------- */
 
-  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, link: true, pad: true, media: true, tilt: true };
+  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true };
   const LABELS = {
     read: 'Озвучка',
     hlSentence: 'Подсветка предложения',
     hlWord: 'Подсветка слова',
     scroll: 'Плавная прокрутка',
-    tap: 'Переход по тексту тапом',
+    tap: 'Озвучка по тапу на тексте',
+    swipe: 'Перемотка свайпами влево/вправо',
     link: 'Открыть ссылку в новой вкладке',
     pad: 'Геймпад',
     media: 'Медиа-команды (наушники, шторка)',
@@ -635,20 +636,94 @@
   let down = null;
 
   function jumpAt(x, y) {
+    const wasIdle = S.state === 'idle';
+    if (wasIdle) {
+      // озвучка ещё не идёт: тап по тексту запускает её с этого места
+      const c0 = caretAt(x, y);
+      if (!c0 || !c0.node || c0.node.nodeType !== 3 || !c0.node.data.trim()) return;
+      S.doc = buildDoc();
+      S.chunks = makeChunks(S.doc.text);
+      if (!S.chunks.length) { S.doc = null; S.chunks = []; return; }
+    }
+    const fail = () => { if (wasIdle) { S.doc = null; S.chunks = []; } };
     const c = caretAt(x, y);
-    if (!c || !S.doc) return;
+    if (!c || !S.doc) return fail();
     let idx = toGlobal(c.node, c.offset);
-    if (idx == null) return;
+    if (idx == null) return fail();
     const t = S.doc.text;
     while (idx > 0 && /[\p{L}\p{N}_]/u.test(t[idx - 1])) idx--;
     // тап должен попасть по тексту, а не рядом с ним
     try {
       const rc = rangeOf(idx, idx + 1).getBoundingClientRect();
-      if (Math.abs(y - (rc.top + rc.bottom) / 2) > rc.height + 14) return;
-    } catch (e) { return; }
+      if (Math.abs(y - (rc.top + rc.bottom) / 2) > rc.height + 14) return fail();
+    } catch (e) { return fail(); }
     S.noScrollUntil = 0;
     speakFrom(idx);
   }
+
+  /* ---------- поля ввода: к ним скрипт не прикасается ---------- */
+
+  const EDITABLE_SEL = 'input,textarea,select,[contenteditable=""],[contenteditable="true"],[contenteditable="plaintext-only"],[role="textbox"],[role="searchbox"],[role="combobox"]';
+
+  function inEditable(t) {
+    try {
+      if (t && t.nodeType !== 1) t = t.parentElement;
+      if (!t) return false;
+      return !!(t.isContentEditable || (t.closest && t.closest(EDITABLE_SEL)));
+    } catch (e) { return false; }
+  }
+
+  function isTextEntry(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.isContentEditable || el.tagName === 'TEXTAREA') return true;
+    if (el.tagName === 'INPUT') return !/^(button|submit|reset|checkbox|radio|range|color|file|image|hidden)$/i.test(el.type || 'text');
+    return /^(textbox|searchbox|combobox)$/.test(el.getAttribute('role') || '');
+  }
+
+  // сейчас что-то печатают (поле в фокусе, открыта клавиатура)
+  function typingNow() {
+    try { return isTextEntry(deepActive()); } catch (e) { return false; }
+  }
+
+  /* ---------- перемотка свайпами влево/вправо ---------- */
+
+  const SWIPE_RIGHT_NEXT = true;   // вправо — следующая фраза, влево — предыдущая (false — наоборот)
+  const SWIPE_MIN = 60;            // минимальная длина свайпа, px
+  const SWIPE_MAX_MS = 800;        // быстрее этого времени
+  const SWIPE_EDGE = 28;           // у краёв экрана свайп отдан системе (жест «назад»)
+  let sw = null;
+
+  function hScrollable(el) {
+    try {
+      if (el && el.nodeType !== 1) el = el.parentElement;
+      for (let e = el; e && e !== document.body && e !== document.documentElement; e = e.parentElement) {
+        const o = getComputedStyle(e).overflowX;
+        if (/(auto|scroll)/.test(o) && e.scrollWidth > e.clientWidth + 4) return true;   // карусель, таблица, код — не мешаем
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  window.addEventListener('touchstart', e => {
+    sw = null;
+    if (!cfg.swipe || !cfg.read || S.state === 'idle' || isOpen || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (t.clientX < SWIPE_EDGE || t.clientX > innerWidth - SWIPE_EDGE) return;
+    const el = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (inEditable(el) || typingNow() || hScrollable(el)) return;
+    sw = { x: t.clientX, y: t.clientY, t: performance.now() };
+  }, { passive: true, capture: true });
+
+  window.addEventListener('touchend', e => {
+    const s0 = sw; sw = null;
+    if (!s0 || S.state === 'idle' || !e.changedTouches.length) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - s0.x, dy = t.clientY - s0.y;
+    if (performance.now() - s0.t > SWIPE_MAX_MS || Math.abs(dx) < SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * 2) return;
+    skipSentence((dx > 0) === SWIPE_RIGHT_NEXT ? 1 : -1);
+  }, { passive: true, capture: true });
+
+  window.addEventListener('touchcancel', () => { sw = null; }, { passive: true, capture: true });
 
   /* ---------- подсказка на экране и вибрация ---------- */
 
@@ -1110,7 +1185,7 @@
   window.addEventListener('contextmenu', e => {
     if (Date.now() < bypassUntil) { bypassUntil = 0; hideBadge(); return; }   // родное меню, один раз
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
-    if (t && t.closest && t.closest('input,textarea,select,[contenteditable=""],[contenteditable="true"]')) return;
+    if (inEditable(t)) return;                      // поля ввода (в т.ч. contenteditable="plaintext-only", role=textbox) не трогаем
 
     linkEl = (t && t.closest) ? t.closest('a[href]') : null;
     if (linkEl && /^javascript:/i.test(linkEl.getAttribute('href') || '')) linkEl = null;
@@ -1133,10 +1208,12 @@
 
   window.addEventListener('pointerup', e => {
     const d = down; down = null;
-    if (!d || !cfg.tap || S.state === 'idle' || isOpen || (S.doc && S.doc.field)) return;
+    if (!d || !cfg.tap || !cfg.read || isOpen || (S.doc && S.doc.field)) return;
     if (host && e.composedPath().includes(host)) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (performance.now() - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10) return;
-    const t = e.target;
+    const t = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (inEditable(t) || typingNow()) return;       // тап по полю или пока открыта клавиатура — озвучку не запускаем
     if (t && t.closest && t.closest('a,button,input,textarea,select,summary,label,[role="button"],[onclick]')) return;
     jumpAt(e.clientX, e.clientY);
   }, true);
