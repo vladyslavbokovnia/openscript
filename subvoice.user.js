@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.5
+// @version      1.6
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/ (или по ссылке #sv=<видео>)
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -62,6 +62,8 @@ document.body.removeAttribute('style');document.body.innerHTML=`
 <p class="note">Наклон влево/вправо — предложение назад/вперёд, удержание — продолжает, каждый шаг с вибрацией. Работает при включённом экране.</p>
 </div></div>
 `;
+// Значок вкладки: у example.com своего нет (белый). Рисуем крупный светлый динамик на прозрачном фоне и ставим PNG-ссылкой (SVG WebView как значок не берёт).
+try{const c=document.createElement('canvas');c.width=c.height=96;const g=c.getContext('2d');g.fillStyle=g.strokeStyle='#f4ffe0';g.shadowColor='rgba(0,0,0,.65)';g.shadowBlur=4;g.beginPath();g.moveTo(6,34);g.lineTo(26,34);g.lineTo(52,10);g.lineTo(52,86);g.lineTo(26,62);g.lineTo(6,62);g.closePath();g.fill();g.lineWidth=8;g.lineCap='round';[[22,.75],[38,.95]].forEach(r=>{g.beginPath();g.arc(52,48,r[0],-r[1],r[1]);g.stroke()});document.querySelectorAll('link[rel~=icon]').forEach(x=>x.remove());const l=document.createElement('link');l.rel='icon';l.type='image/png';l.sizes='96x96';l.href=c.toDataURL('image/png');document.head.appendChild(l);const m=document.createElement('meta');m.name='theme-color';m.content='#101116';document.head.appendChild(m)}catch(e){}
 const $=id=>document.getElementById(id),LS=(k,v)=>{try{if(v===undefined)return localStorage.getItem(k);localStorage.setItem(k,v)}catch(e){}};
 let orig='',trans='',cur='',showOrig=false,fname='',sents=[],brk=[],spans=[],idx=0,pos=0,off=0,playing=false,done=false,act=null,wlk=null,sensOn=false,cd=0,tt=null,got=0,base=null,ec=0,mc=0,err='',ps='',accS=null,permOk=false;
 function cleanText(raw){let s=raw.replace(/^\uFEFF/,'').replace(/\r/g,'');if(/^\[Script Info\]/mi.test(s)){s=s.split('\n').filter(x=>/^Dialogue\s*:/i.test(x)).map(x=>{let m=x.match(/^Dialogue\s*:\s*[^,]*,(?:[^,]*,){7}(.*)$/i);return m?m[1].replace(/\{[^}]*\}/g,'').replace(/\\N|\\n/g,' '):''}).join('\n')}s=s.replace(/^\s*WEBVTT[^\n]*\n?/i,'');s=s.split('\n').filter(x=>{let t=x.trim();return !/^\d+$/.test(t)&&!/^(?:\d{1,2}:)?\d{2}:\d{2}[,.]\d{3}\s*-->/.test(t)&&!/^[\d:.]+\s*-->/.test(t)&&!/^align:|^position:|^line:|^size:|^vertical:|^<\?xml/i.test(t)}).join('\n');s=s.replace(/<[^>]+>/g,'').replace(/&nbsp;/gi,' ').replace(/&amp;/gi,'&').replace(/&lt;/gi,'<').replace(/&gt;/gi,'>').replace(/&quot;/gi,'"').replace(/&#39;|&apos;/gi,"'").replace(/\{\\[^}]*\}/g,'').replace(/\\N|\\n/g,' ').replace(/[ \t]+/g,' ').replace(/\n[ \t]*/g,'\n').replace(/\n{3,}/g,'\n\n').trim();return s.split(/\n\s*\n/).map(p=>p.split('\n').map(x=>x.trim()).filter(Boolean).join(' ')).filter(Boolean).join('\n\n')}
