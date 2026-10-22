@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.0
+// @version 11.1
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -29,7 +29,7 @@
     tiltEnabled: false,
     tiltThreshold: 40,
     tiltCooldown: 1500,
-    shareOnTap: false,
+    shareOnTap: true,
     flipBottom: false,
     hideBar: true,
     translate: true,   // переводить нерусские названия на русский сразу после загрузки
@@ -51,7 +51,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.0';
+  const VERSION = '11.1';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -884,8 +884,9 @@
 
   // По тапу: сразу появляются два полупрозрачных пункта:
   //   «↗ Вкладка» — новая вкладка с переходом в неё (не в фоне);
-  //   «📝 SUBVOICE · фон» — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео.
-  // Если за 1 с ничего не нажать — открывается системное «Поделиться».
+  //   «📝 SUBVOICE · фон» — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
+  //   «⬇ SnapTube» и «▶ NewPipe» — прямая отправка ссылки в приложение.
+  // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
   // Страница не знает про группы вкладок: новая вкладка встаёт в группу вкладки-источника — это решает браузер.
   let pop = null, popTimer = null;
   function closePop() { clearTimeout(popTimer); popTimer = null; pop && pop.remove(); pop = null; }
@@ -893,12 +894,23 @@
     try { if (typeof GM_openInTab === 'function') { GM_openInTab(url, { active: !!active, insert: true, setParent: true }); showToast(active ? '↗ Открыто' : '↗ Открыто в фоне', 1500); return; } } catch {}
     window.open(url, '_blank');
   }
+  // Прямая отправка в приложение через intent: (браузеры Android: Chrome/Kiwi и браузер универсального приложения)
+  function launchIntent(u) {
+    const a = Object.assign(document.createElement('a'), { href: u });
+    a.style.display = 'none'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  const sendIntent = (url, pkg) => 'intent:#Intent;action=android.intent.action.SEND;type=text/plain;' +
+    (pkg ? 'package=' + pkg + ';' : '') + 'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';end';
+  const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;package=' + pkg + ';action=android.intent.action.VIEW;end';
   async function doShare(url, title) {
     if (navigator.share) {
       try { await navigator.share({ title: title || 'YouTube', url }); }
       catch (e) { if (!e || e.name !== 'AbortError') { try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); } } }
       return;
     }
+    // Нет navigator.share (WebView): системное меню «Поделиться» через intent, ссылка заодно копируется
+    try { if (typeof GM_setClipboard === 'function') GM_setClipboard(url); } catch {}
+    try { launchIntent(sendIntent(url)); return; } catch {}
     try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
   }
   function openShare(info, title) {
@@ -909,7 +921,7 @@
     pop = document.createElement('div');
     Object.assign(pop.style, {
       position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
-      display: 'flex', gap: '8px', zIndex: '2147483647', maxWidth: '96vw',
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', zIndex: '2147483647', width: '92vw',
     });
     const mk = (label, fn) => {
       const b = Object.assign(document.createElement('button'), { textContent: label });
@@ -921,9 +933,14 @@
       b.addEventListener('click', e => { e.stopPropagation(); closePop(); fn(); });
       return b;
     };
-    pop.append(mk('↗ Вкладка', () => openTab(tabUrl, true)), mk('📝 SUBVOICE · фон', () => openTab(svUrl, false)));
+    pop.append(
+      mk('↗ Вкладка', () => openTab(tabUrl, true)),
+      mk('📝 SUBVOICE · фон', () => openTab(svUrl, false)),
+      mk('⬇ SnapTube', () => launchIntent(sendIntent(url, 'com.snaptube.premium'))),
+      mk('▶ NewPipe', () => launchIntent(viewIntent(info.id, 'org.schabi.newpipe')))
+    );
     document.body.appendChild(pop);
-    popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1000);
+    popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
