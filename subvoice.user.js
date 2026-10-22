@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.6
+// @version      1.7
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/ (или по ссылке #sv=<видео>)
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -116,15 +116,20 @@ setInterval(()=>{$('diag').textContent=['протокол: '+location.protocol+(
 const gm=(url,o={})=>new Promise((res,rej)=>GM_xmlhttpRequest(Object.assign({method:'GET',url,timeout:20000,onload:r=>res(r),onerror:()=>rej(new Error('Нет связи: '+new URL(url).hostname)),ontimeout:()=>rej(new Error('Таймаут: '+new URL(url).hostname))},o)));
 const dec=s=>s.replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&quot;/g,'"').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
 function parseTT(s){s=(s||'').trim();if(!s)return[];if(s[0]==='{'){try{return(JSON.parse(s).events||[]).filter(e=>e.segs).map(e=>e.segs.map(x=>x.utf8).join('').replace(/\s+/g,' ').trim()).filter(Boolean)}catch(e){return[]}}const d=new DOMParser().parseFromString(s,'text/xml');return[...d.querySelectorAll('text,p')].map(n=>dec(n.textContent.replace(/\s+/g,' ').trim())).filter(Boolean)}
-async function ytSubs(id){let tracks=[],title='YouTube';
-const cl=[{n:'ANDROID',v:'20.10.38',ua:'com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip',x:{androidSdkVersion:34}},{n:'WEB',v:'2.20250101.00.00',ua:navigator.userAgent,x:{}}];
-for(const c of cl){try{const r=await gm('https://www.youtube.com/youtubei/v1/player?prettyPrint=false',{method:'POST',anonymous:true,headers:{'Content-Type':'application/json','User-Agent':c.ua},data:JSON.stringify({context:{client:Object.assign({clientName:c.n,clientVersion:c.v,hl:'en'},c.x)},videoId:id})});const j=JSON.parse(r.responseText);tracks=(j.captions&&j.captions.playerCaptionsTracklistRenderer&&j.captions.playerCaptionsTracklistRenderer.captionTracks)||[];title=(j.videoDetails&&j.videoDetails.title)||title;if(tracks.length)break}catch(e){}}
-if(!tracks.length)throw new Error('YouTube не отдал субтитры (их может не быть)');
+async function ytSubs(id){let title='YouTube',why=[];
+const cl=[{n:'ANDROID',v:'20.10.38',ua:'com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip',x:{androidSdkVersion:34}},{n:'IOS',v:'20.10.4',ua:'com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)',x:{deviceMake:'Apple',deviceModel:'iPhone16,2',osName:'iPhone',osVersion:'18.3.2.22D82'}},{n:'WEB',v:'2.20250101.00.00',ua:navigator.userAgent,x:{}}];
+for(const c of cl){try{const r=await gm('https://www.youtube.com/youtubei/v1/player?prettyPrint=false',{method:'POST',anonymous:true,headers:{'Content-Type':'application/json','User-Agent':c.ua},data:JSON.stringify({context:{client:Object.assign({clientName:c.n,clientVersion:c.v,hl:'en'},c.x)},videoId:id})});
+if(r.status&&r.status>=400){why.push(c.n+': HTTP '+r.status);continue}
+const j=JSON.parse(r.responseText);title=(j.videoDetails&&j.videoDetails.title)||title;
+const tracks=(j.captions&&j.captions.playerCaptionsTracklistRenderer&&j.captions.playerCaptionsTracklistRenderer.captionTracks)||[];
+if(!tracks.length){why.push(c.n+': нет дорожек'+(j.playabilityStatus&&j.playabilityStatus.status?' ('+j.playabilityStatus.status+')':''));continue}
 const pick=tracks.find(t=>(t.languageCode||'').startsWith('ru'))||tracks.find(t=>t.kind!=='asr')||tracks[0];
 const u=new URL(pick.baseUrl);u.searchParams.set('fmt','json3');
-const lines=parseTT((await gm(u.href,{anonymous:true})).responseText);
-if(!lines.length)throw new Error('YouTube вернул пустой ответ — субтитры недоступны');
-return{title,text:lines.join('\n\n')}}
+const tr=await gm(u.href,{anonymous:true,headers:{'User-Agent':c.ua}});
+const lines=parseTT(tr.responseText);
+if(lines.length)return{title,text:lines.join('\n\n')};
+why.push(c.n+': субтитры пустые (HTTP '+tr.status+', '+(tr.responseText||'').length+' байт)')}catch(e){why.push(c.n+': '+e.message)}}
+throw new Error('YouTube не отдал субтитры\n'+why.join('\n'))}
 async function biliSubs(u){if(/b23\.tv/.test(u)){const r=await gm(u);u=r.finalUrl||u}
 const m=u.match(/\/video\/(BV\w+|av\d+)/i);if(!m)throw new Error('Не нашёл номер видео в ссылке');
 const q=/^av/i.test(m[1])?'aid='+m[1].slice(2):'bvid='+m[1],p=+(new URL(u).searchParams.get('p')||1);
@@ -136,7 +141,7 @@ const pick=subs.find(s=>s.lan==='ru')||subs.find(s=>!/^ai-/.test(s.lan))||subs[0
 const body=JSON.parse((await gm(su)).responseText).body||[];
 return{title:v.title+(v.pages&&v.pages.length>1?' · P'+p:''),text:body.map(x=>String(x.content).replace(/\s+/g,' ').trim()).filter(Boolean).join('\n\n')}}
 async function getSubs(u){u=u.trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);if(m)return ytSubs(m[1]);if(/bilibili\.com|b23\.tv/.test(u))return biliSubs(u);if(/^[\w-]{11}$/.test(u))return ytSubs(u);throw new Error('Не похоже на ссылку YouTube или Bilibili')}
-async function loadLink(u){stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){return info('⚠️ '+e.message)}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)}
+async function loadLink(u){stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){show('');const d=document.createElement('div');d.style.cssText='color:#f0a0a0;font-size:14px;white-space:pre-wrap;word-break:break-word';d.textContent='⚠️ '+e.message+'\n\n'+u;$('reader').textContent='';$('reader').append(d);return info('⚠️ ошибка · подробности ниже')}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)}
 $('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;loadLink(u)};
 lab();show('');sens();
 // Открытие по ссылке из youtube-tts: https://example.com/#sv=<ссылка на видео> — субтитры грузятся и переводятся сами
