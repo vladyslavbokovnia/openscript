@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.4
-// @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/
+// @version      1.5
+// @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/ (или по ссылке #sv=<видео>)
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -134,6 +134,9 @@ const pick=subs.find(s=>s.lan==='ru')||subs.find(s=>!/^ai-/.test(s.lan))||subs[0
 const body=JSON.parse((await gm(su)).responseText).body||[];
 return{title:v.title+(v.pages&&v.pages.length>1?' · P'+p:''),text:body.map(x=>String(x.content).replace(/\s+/g,' ').trim()).filter(Boolean).join('\n\n')}}
 async function getSubs(u){u=u.trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);if(m)return ytSubs(m[1]);if(/bilibili\.com|b23\.tv/.test(u))return biliSubs(u);if(/^[\w-]{11}$/.test(u))return ytSubs(u);throw new Error('Не похоже на ссылку YouTube или Bilibili')}
-$('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){return info('⚠️ '+e.message)}fname=r.title;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)};
+async function loadLink(u){stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){return info('⚠️ '+e.message)}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)}
+$('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;loadLink(u)};
 lab();show('');sens();
+// Открытие по ссылке из youtube-tts: https://example.com/#sv=<ссылка на видео> — субтитры грузятся и переводятся сами
+const hm=location.hash.match(/[#&]sv=([^&]+)/);if(hm){let u='';try{u=decodeURIComponent(hm[1])}catch(e){}try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(u)loadLink(u)}
 })();
