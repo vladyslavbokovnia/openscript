@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.6.1
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке: открыть в новой вкладке (в том числе в выбранном профиле), стандартное меню
+// @version      1.7.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке: открыть в новой вкладке (в том числе в выбранном профиле), стандартное меню; тёмная тема для выбранных сайтов (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -135,7 +135,24 @@
       padDebug = !padDebug;
       buildMenu();
     }, { autoClose: false }));
+    const dark = darkState();
+    if (dark >= 0) {
+      menuIds.push(GM_registerMenuCommand(dark ? '🌙 Тёмная тема на этом сайте: вкл' : '☀️ Тёмная тема на этом сайте: выкл', () => {
+        try { GM_openInTab.darkTheme(!darkState()); } catch (e) {}
+        buildMenu();
+      }, { autoClose: false }));
+    }
     menuIds.push(GM_registerMenuCommand('🔄 Обновить', checkUpdate));
+  }
+
+  // Тёмная тема сайта: затемнение WebView включает само приложение (GM_openInTab.darkTheme есть только в браузере
+  // универсального приложения). -1 — нет такой возможности, 0 — выключена, 1 — включена для этого сайта.
+  function darkState() {
+    try {
+      const f = typeof GM_openInTab === 'function' ? GM_openInTab.darkTheme : null;
+      const v = typeof f === 'function' ? f() : -1;
+      return typeof v === 'number' ? v : -1;
+    } catch (e) { return -1; }
   }
 
   /* ---------- состояние ---------- */
@@ -1161,6 +1178,8 @@
   }
 
   buildMenu();
+  // на document-start адрес вкладки в приложении мог ещё не обновиться: пункт про тёмную тему перестраиваем после загрузки
+  if (IS_TOP) document.addEventListener('DOMContentLoaded', buildMenu);
 
   /* ---------- перехват событий ---------- */
 
