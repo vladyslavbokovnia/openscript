@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.5.0
-// @description  Круговое контекстное меню без текста: озвучка (старт и переход тапом по тексту, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально), открыть ссылку в новой вкладке, стандартное меню
+// @version      1.6.1
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке: открыть в новой вкладке (в том числе в выбранном профиле), стандартное меню
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -77,9 +77,9 @@
     hlSentence: 'Подсветка предложения',
     hlWord: 'Подсветка слова',
     scroll: 'Плавная прокрутка',
-    tap: 'Озвучка по тапу на тексте',
+    tap: 'Тап по тексту, ссылкам и кнопкам: старт / стоп озвучки',
     swipe: 'Перемотка свайпами влево/вправо',
-    link: 'Открыть ссылку в новой вкладке',
+    link: 'Меню на ссылке (долгое нажатие)',
     pad: 'Геймпад',
     media: 'Медиа-команды (наушники, шторка)',
     tilt: 'Читать поле: телефон вертикально'
@@ -143,7 +143,6 @@
   let host = null, root = null, wrap = null, badge = null, badgeTimer = 0;
   let isOpen = false, openedAt = 0;
   let cx = 0, cy = 0;
-  let snapshot = null;
   let bypassUntil = 0;
   let linkEl = null;
   const keep = [];
@@ -160,11 +159,9 @@
 
   // viewBox обрезан до самого рисунка, поэтому значки крупные и без лишних полей
   const ICONS = {
-    read: '<svg viewBox="2 2 20 20"><path d="M3 10v4h4l5 4V6L7 10H3z"/><path d="M15.5 8.5a5 5 0 010 7M18 6a8.5 8.5 0 010 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
-    pause: '<svg viewBox="2 2 20 20"><rect x="5.5" y="4" width="5" height="16" rx="1.4"/><rect x="13.5" y="4" width="5" height="16" rx="1.4"/></svg>',
-    stop: '<svg viewBox="2 2 20 20"><rect x="5" y="5" width="14" height="14" rx="3"/></svg>',
     menu: '<svg viewBox="2 2 20 20"><circle cx="12" cy="5" r="2.6"/><circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="19" r="2.6"/></svg>',
-    newtab: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>'
+    newtab: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>',
+    profile: '<svg viewBox="2 2 20 20"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.2 3.6-7 8-7s8 2.8 8 7z"/></svg>'
   };
 
   /* ---------- подсветка (CSS Custom Highlight API) ---------- */
@@ -195,10 +192,6 @@
     root.innerHTML = `
       <style>
         .wrap{position:fixed;width:0;height:0;pointer-events:none}
-        .disc{position:absolute;left:0;top:0;width:${2 * (RADIUS + BTN / 2 + 8)}px;height:${2 * (RADIUS + BTN / 2 + 8)}px;
-          transform:translate(-50%,-50%) scale(.4);opacity:0;border-radius:50%;
-          background:rgba(20,20,22,.28);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-          border:1px solid rgba(255,255,255,.18);transition:transform .16s ease,opacity .16s ease}
         .dot{position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.85);
           transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(0,0,0,.25);opacity:0;transition:opacity .16s}
         .btn{position:absolute;left:0;top:0;width:${BTN}px;height:${BTN}px;border-radius:50%;border:0;padding:0;
@@ -208,7 +201,7 @@
           transform:translate(-50%,-50%) scale(.2);transition:transform .18s cubic-bezier(.2,1.4,.4,1),opacity .15s}
         .btn svg{width:${ICON}px;height:${ICON}px;fill:currentColor;pointer-events:none}
         .btn:active{filter:brightness(1.25)}
-        .open .disc{transform:translate(-50%,-50%) scale(1);opacity:1}
+        .pn{font:700 22px/1 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.7);pointer-events:none}
         .open .dot{opacity:1}
         .open .btn{opacity:1;transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1)}
         .badge{position:fixed;right:16px;bottom:16px;width:46px;height:46px;border-radius:50%;background:#48484a;color:#fff;
@@ -222,7 +215,7 @@
         .toast.on{opacity:1}
         @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55)}70%{box-shadow:0 0 0 14px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
       </style>
-      <div class="wrap"><div class="disc"></div><div class="dot"></div></div>
+      <div class="wrap"><div class="dot"></div></div>
       <div class="badge">${ICONS.menu}</div>
       <div class="toast"></div>`;
     wrap = root.querySelector('.wrap');
@@ -230,20 +223,40 @@
     (document.documentElement || document).appendChild(host);
   }
 
+  // Меню показывается только на ссылках: вне ссылок остаётся родное меню браузера
   function buildItems() {
     const items = [];
-    if (cfg.read) {
-      if (S.state === 'playing') items.push({ icon: ICONS.pause, color: '#2f80ed', run: () => { pauseReading(); close(); } });
-      else if (S.state === 'paused') items.push({ icon: ICONS.read, color: '#2f80ed', run: () => { close(); resumeReading(); } });
-      else items.push({ icon: ICONS.read, color: '#2f80ed', run: onRead });
-      if (S.state !== 'idle') items.push({ icon: ICONS.stop, color: '#d64545', run: () => { stopReading(); close(); } });
-    }
     if (cfg.link && linkEl) {
       const href = linkEl.href;
       items.push({ icon: ICONS.newtab, color: '#2e9e5b', run: () => { close(); openLink(href); } });
+      const pr = getProfiles();
+      if (pr.length > 1) items.push({ icon: ICONS.profile, color: '#e08a1e', run: () => showProfiles(href, pr) });
     }
     items.push({ icon: ICONS.menu, color: '#48484a', run: onStandard });
     return items;
+  }
+
+  // Профили браузера. Их отдаёт только браузер универсального приложения (GM_openInTab.profiles);
+  // в Tampermonkey и других менеджерах функции нет — тогда кнопки выбора профиля просто не будет.
+  function getProfiles() {
+    try {
+      const f = typeof GM_openInTab === 'function' ? GM_openInTab.profiles : null;
+      if (typeof f !== 'function') return [];
+      const a = f();
+      return Array.isArray(a) ? a.filter(p => p && p.ok !== false) : [];
+    } catch (e) { return []; }
+  }
+
+  // Второй круг: по кнопке на каждый профиль (цвет и номер как на вкладках браузера), белое кольцо — профиль текущей вкладки
+  function showProfiles(href, pr) {
+    const items = pr.map(p => ({
+      icon: '<span class="pn">' + (p.i + 1) + '</span>',
+      color: p.c || '#48484a',
+      title: p.n,
+      ring: !!p.cur,
+      run: () => { close(); openLink(href, p.i); }
+    }));
+    open(cx, cy, items);
   }
 
   function open(x, y, items) {
@@ -258,12 +271,14 @@
     wrap.classList.remove('open');
     wrap.querySelectorAll('.btn').forEach(b => b.remove());
     const n = items.length;
-    const step = n <= 2 ? 90 : n === 3 ? 70 : 60;
+    const step = n <= 2 ? 90 : n === 3 ? 70 : n <= 6 ? 60 : 360 / n;
     items.forEach((it, i) => {
       const a = (-90 + (i - (n - 1) / 2) * step) * Math.PI / 180;
       const b = document.createElement('button');
       b.className = 'btn';
       b.style.background = it.color;
+      if (it.title) { b.title = it.title; b.setAttribute('aria-label', it.title); }
+      if (it.ring) b.style.boxShadow = '0 4px 14px rgba(0,0,0,.4),0 0 0 3px #fff';
       b.style.setProperty('--x', Math.cos(a) * RADIUS + 'px');
       b.style.setProperty('--y', Math.sin(a) * RADIUS + 'px');
       b.innerHTML = it.icon;
@@ -272,7 +287,6 @@
       wrap.appendChild(b);
     });
 
-    snapshot = currentRange();
     isOpen = true;
     openedAt = performance.now();
     requestAnimationFrame(() => requestAnimationFrame(() => { if (isOpen) wrap.classList.add('open'); }));
@@ -296,19 +310,7 @@
     if (badge) badge.classList.remove('on');
   }
 
-  /* ---------- выделение ---------- */
-
-  function currentRange() {
-    const s = getSelection();
-    if (s && s.rangeCount && !s.isCollapsed) return s.getRangeAt(0).cloneRange();
-    return null;
-  }
-
-  document.addEventListener('selectionchange', () => {
-    if (!isOpen) return;
-    const r = currentRange();
-    if (r) snapshot = r;
-  });
+  /* ---------- позиция в тексте ---------- */
 
   function caretAt(x, y) {
     if (document.caretPositionFromPoint) {
@@ -320,12 +322,6 @@
       if (r) return { node: r.startContainer, offset: r.startOffset };
     }
     return null;
-  }
-
-  function startPoint() {
-    const r = currentRange() || snapshot;
-    if (r) return { node: r.startContainer, offset: r.startOffset };
-    return caretAt(cx, cy);
   }
 
   /* ---------- модель текста страницы ---------- */
@@ -522,23 +518,6 @@
     if (keep.length > 6) keep.shift();
     paintSentence(s, c.e);
     speechSynthesis.speak(u);
-  }
-
-  function onRead() {
-    const st = startPoint();
-    close();
-    if (!st) return;
-    stopReading();
-    S.doc = buildDoc();
-    S.chunks = makeChunks(S.doc.text);
-    let idx = toGlobal(st.node, st.offset);
-    if (idx == null) return;
-    // для места без выделения — к началу слова
-    if (!currentRange() && !snapshot) {
-      const t = S.doc.text;
-      while (idx > 0 && /[\p{L}\p{N}_]/u.test(t[idx - 1])) idx--;
-    }
-    speakFrom(idx);
   }
 
   function pauseReading() {
@@ -1125,9 +1104,12 @@
 
   /* ---------- ссылка ---------- */
 
-  function openLink(href) {
+  // profile (0-5) понимает только браузер универсального приложения; в остальных менеджерах опция игнорируется
+  function openLink(href, profile) {
+    const o = { active: true, insert: true, setParent: true };
+    if (profile != null) o.profile = profile;
     try {
-      if (typeof GM_openInTab === 'function') { GM_openInTab(href, { active: true, insert: true, setParent: true }); return; }
+      if (typeof GM_openInTab === 'function') { GM_openInTab(href, o); return; }
     } catch (e) {}
     window.open(href, '_blank', 'noopener');
   }
@@ -1182,39 +1164,100 @@
 
   /* ---------- перехват событий ---------- */
 
+  const LP_MS = 420;       // долгое нажатие на ссылке, мс
+  const LP_MOVE = 10;      // сдвиг пальца больше этого — это прокрутка, не долгое нажатие
+  let lp = null;           // ожидающее долгое нажатие { x, y, a, timer }
+  let clickGuard = false;  // после долгого нажатия съедаем «отпускание», чтобы ссылка не открылась
+
+  function lpCancel() {
+    if (lp) { clearTimeout(lp.timer); lp = null; }
+  }
+
+  // Ссылка под пальцем: идём по composedPath, чтобы находить <a> и внутри shadow DOM
+  function linkFrom(e) {
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    for (const n of path) {
+      if (n && n.nodeType === 1 && n.tagName === 'A' && n.hasAttribute('href')) {
+        return /^javascript:/i.test(n.getAttribute('href') || '') ? null : n;
+      }
+    }
+    return null;
+  }
+
+  function showLinkMenu(x, y, a) {
+    linkEl = a;
+    const items = buildItems();
+    if (items.length < 2) return false;
+    open(x, y, items);
+    buzz(20);
+    return true;
+  }
+
+  // Своё долгое нажатие по таймеру, а не по событию contextmenu: некоторые сайты (YouTube) гасят
+  // touchstart, и тогда браузер contextmenu вообще не присылает
+  function lpFire() {
+    const s = lp; lp = null;
+    if (!s || isOpen || !cfg.link || Date.now() < bypassUntil) return;
+    if (showLinkMenu(s.x, s.y, s.a)) clickGuard = true;
+  }
+
   window.addEventListener('contextmenu', e => {
     if (Date.now() < bypassUntil) { bypassUntil = 0; hideBadge(); return; }   // родное меню, один раз
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
-    if (inEditable(t)) return;                      // поля ввода (в т.ч. contenteditable="plaintext-only", role=textbox) не трогаем
-
-    linkEl = (t && t.closest) ? t.closest('a[href]') : null;
-    if (linkEl && /^javascript:/i.test(linkEl.getAttribute('href') || '')) linkEl = null;
-
-    const items = buildItems();
-    if (items.length < 2) return;                    // заменять нечего — оставляем родное меню
-    e.preventDefault();
-    e.stopPropagation();
-    open(e.clientX, e.clientY, items);
+    if (inEditable(t)) return;                      // поля ввода не трогаем
+    if (host && e.composedPath && e.composedPath().includes(host)) { e.preventDefault(); return; }
+    // меню уже открыто нашим таймером — родное не нужно
+    if (isOpen && performance.now() - openedAt < 1500) { e.preventDefault(); e.stopPropagation(); return; }
+    if (!cfg.link) return;
+    const a = linkFrom(e);
+    if (!a) return;                                 // не ссылка (обычный текст и т.п.): родное меню браузера
+    lpCancel();
+    if (showLinkMenu(e.clientX, e.clientY, a)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
 
+  // После долгого нажатия отпускание пальца даёт click/touchend: без этого ссылка откроется сама
+  // (а на YouTube ещё и сработает тап-обработчик карточки)
+  const swallow = e => {
+    if (!clickGuard) return;
+    if (host && e.composedPath && e.composedPath().includes(host)) return;   // кнопки самого меню не трогаем
+    if (e.type === 'click') clickGuard = false;
+    if (e.cancelable) e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+  ['click', 'touchend', 'mouseup'].forEach(t => window.addEventListener(t, swallow, { capture: true, passive: false }));
+
+  window.addEventListener('dragstart', e => { if (isOpen) e.preventDefault(); }, true);
+
   window.addEventListener('pointerdown', e => {
-    if (isOpen && !e.composedPath().includes(host)) close();
+    clickGuard = false;                             // новое касание — прошлое уже закончилось
+    lpCancel();
+    const inHost = host && e.composedPath().includes(host);
+    if (isOpen && !inHost) close();
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    if (inHost || !cfg.link || !e.isPrimary || e.pointerType === 'mouse' || Date.now() < bypassUntil) return;
+    const a = linkFrom(e);
+    if (!a || inEditable(e.composedPath()[0])) return;
+    lp = { x: e.clientX, y: e.clientY, a, timer: setTimeout(lpFire, LP_MS) };
   }, true);
 
   window.addEventListener('pointermove', e => {
+    if (lp && Math.hypot(e.clientX - lp.x, e.clientY - lp.y) > LP_MOVE) lpCancel();
     if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8) hold();
   }, { passive: true, capture: true });
 
+  window.addEventListener('pointercancel', lpCancel, true);
+
   window.addEventListener('pointerup', e => {
+    lpCancel();
     const d = down; down = null;
-    if (!d || !cfg.tap || !cfg.read || isOpen || (S.doc && S.doc.field)) return;
+    if (!d || !cfg.tap || !cfg.read || isOpen) return;
     if (host && e.composedPath().includes(host)) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (performance.now() - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) > 10) return;
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
-    if (inEditable(t) || typingNow()) return;       // тап по полю или пока открыта клавиатура — озвучку не запускаем
-    if (t && t.closest && t.closest('a,button,input,textarea,select,summary,label,[role="button"],[onclick]')) return;
+    if (inEditable(t) || typingNow()) return;       // тап по полю или пока открыта клавиатура — озвучку не трогаем
+    if (S.state === 'playing') { stopReading(); return; }   // тап во время озвучки — стоп
+    if (S.doc && S.doc.field) return;
     jumpAt(e.clientX, e.clientY);
   }, true);
 
