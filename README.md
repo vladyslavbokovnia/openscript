@@ -5,6 +5,7 @@
 - [SUBVOICE](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js)
 - [Phantom Opera](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js)
 - [📢 YouTube TTS](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js)
+- [Прятать панели при прокрутке](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/hide-panels.user.js)
 <!-- AUTO-INSTALL-LINKS:END -->
 Userscripts для Tampermonkey (Android, Kiwi). Чтобы установить, откройте ссылку «Установить»
 в браузере с Tampermonkey — он сам предложит установку. Нужна именно raw-ссылка (не страница
@@ -14,6 +15,7 @@ Userscripts для Tampermonkey (Android, Kiwi). Чтобы установить
 |---|---|---|
 | YouTube TTS | Листает ленту YouTube и озвучивает названия и даты | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js |
 | SUBVOICE | Читает субтитры вслух с переводом на русский, перемотка наклонами, субтитры по ссылке YouTube/Bilibili | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js |
+| Прятать панели при прокрутке | На любых сайтах прячет закреплённые шапки и нижние меню при прокрутке вниз, возвращает при прокрутке вверх; настройки в меню Tampermonkey | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/hide-panels.user.js |
 | te_phantom_opera | см. заголовок файла | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js |
 
 ## Схема ссылки
@@ -37,6 +39,6 @@ SUBVOICE. С любой другой https-страницы: меню Tampermonk
 
 ## Обновления
 
-В YouTube TTS и SUBVOICE прописаны `@updateURL` и `@downloadURL`, поэтому Tampermonkey
+В YouTube TTS, SUBVOICE и «Прятать панели» прописаны `@updateURL` и `@downloadURL`, поэтому Tampermonkey
 обновляет их сам при выходе новой версии (растёт номер `@version`). Вручную: Tampermonkey →
 скрипт → проверить обновление.
