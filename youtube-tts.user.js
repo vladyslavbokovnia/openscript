@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.1
+// @version 11.2
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -30,6 +30,7 @@
     tiltThreshold: 40,
     tiltCooldown: 1500,
     shareOnTap: true,
+    shareMenu: true,   // false → только первое меню, без системного «Поделиться» и без таймера 1,5 с
     flipBottom: false,
     hideBar: true,
     translate: true,   // переводить нерусские названия на русский сразу после загрузки
@@ -51,7 +52,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.1';
+  const VERSION = '11.2';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -825,6 +826,11 @@
       alert(`Поделиться по тапу: ${CFG.shareOnTap ? 'включено' : 'выключено'}`);
     });
 
+    GM_registerMenuCommand(`🔗 Системное «Поделиться» через 1,5 с: ${CFG.shareMenu ? 'ВКЛ ✓' : 'ВЫКЛ (только первое меню)'}`, () => {
+      CFG.shareMenu = !CFG.shareMenu; saveCFG(CFG);
+      alert(`Системное «Поделиться»: ${CFG.shareMenu ? 'включено (через 1,5 с)' : 'выключено — меню остаётся, пока не выберешь пункт или не тапнешь мимо'}`);
+    });
+
     GM_registerMenuCommand(`🙃 Переворот вверх ногами → конец ленты: ${CFG.flipBottom ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
       CFG.flipBottom = !CFG.flipBottom; saveCFG(CFG);
       alert(`Переворот → конец ленты: ${CFG.flipBottom ? 'включён' : 'выключен'}`);
@@ -887,9 +893,15 @@
   //   «📝 SUBVOICE · фон» — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
   //   «⬇ SnapTube» и «▶ NewPipe» — прямая отправка ссылки в приложение.
   // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
+  // Если выключена настройка shareMenu — остаётся только это первое меню: без таймера,
+  // закрывается выбором пункта или тапом мимо.
   // Страница не знает про группы вкладок: новая вкладка встаёт в группу вкладки-источника — это решает браузер.
-  let pop = null, popTimer = null;
-  function closePop() { clearTimeout(popTimer); popTimer = null; pop && pop.remove(); pop = null; }
+  let pop = null, popTimer = null, popOutside = null;
+  function closePop() {
+    clearTimeout(popTimer); popTimer = null;
+    if (popOutside) { document.removeEventListener('pointerdown', popOutside, true); popOutside = null; }
+    pop && pop.remove(); pop = null;
+  }
   function openTab(url, active) {
     try { if (typeof GM_openInTab === 'function') { GM_openInTab(url, { active: !!active, insert: true, setParent: true }); showToast(active ? '↗ Открыто' : '↗ Открыто в фоне', 1500); return; } } catch {}
     window.open(url, '_blank');
@@ -940,7 +952,13 @@
       mk('▶ NewPipe', () => launchIntent(viewIntent(info.id, 'org.schabi.newpipe')))
     );
     document.body.appendChild(pop);
-    popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
+    if (CFG.shareMenu) {
+      popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
+    } else {
+      // Режим «только первое меню»: без таймера, закрывается тапом мимо
+      popOutside = e => { if (pop && !pop.contains(e.target)) closePop(); };
+      setTimeout(() => { if (pop) document.addEventListener('pointerdown', popOutside, true); }, 0);
+    }
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
