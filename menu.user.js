@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.7.0
+// @version      1.7.1
 // @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке: открыть в новой вкладке (в том числе в выбранном профиле), стандартное меню; тёмная тема для выбранных сайтов (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
@@ -219,6 +219,7 @@
         .btn svg{width:${ICON}px;height:${ICON}px;fill:currentColor;pointer-events:none}
         .btn:active{filter:brightness(1.25)}
         .pn{font:700 22px/1 system-ui,sans-serif;text-shadow:0 1px 3px rgba(0,0,0,.7);pointer-events:none}
+        .btn img.pi{width:100%;height:100%;border-radius:50%;object-fit:cover;pointer-events:none}
         .open .dot{opacity:1}
         .open .btn{opacity:1;transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1)}
         .badge{position:fixed;right:16px;bottom:16px;width:46px;height:46px;border-radius:50%;background:#48484a;color:#fff;
@@ -264,10 +265,18 @@
     } catch (e) { return []; }
   }
 
-  // Второй круг: по кнопке на каждый профиль (цвет и номер как на вкладках браузера), белое кольцо — профиль текущей вкладки
+  // Значок профиля, как в браузере: своя картинка, иначе эмодзи, иначе номер
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  function profileIcon(p) {
+    const label = p.g || String(p.i + 1);
+    if (p.img && /^data:image\//.test(p.img)) return '<img class="pi" alt="' + esc(label) + '" src="' + p.img + '">';
+    return '<span class="pn">' + esc(label) + '</span>';
+  }
+
+  // Второй круг: по кнопке на каждый профиль (цвет и значок как на вкладках браузера), белое кольцо — профиль текущей вкладки
   function showProfiles(href, pr) {
     const items = pr.map(p => ({
-      icon: '<span class="pn">' + (p.i + 1) + '</span>',
+      icon: profileIcon(p),
       color: p.c || '#48484a',
       title: p.n,
       ring: !!p.cur,
@@ -299,6 +308,13 @@
       b.style.setProperty('--x', Math.cos(a) * RADIUS + 'px');
       b.style.setProperty('--y', Math.sin(a) * RADIUS + 'px');
       b.innerHTML = it.icon;
+      // сайт с жёсткой CSP может не пустить data:-картинку: тогда показываем эмодзи или номер
+      b.querySelectorAll('img.pi').forEach(im => im.addEventListener('error', () => {
+        const sp = document.createElement('span');
+        sp.className = 'pn';
+        sp.textContent = im.alt;
+        im.replaceWith(sp);
+      }));
       b.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); });
       b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); it.run(); });
       wrap.appendChild(b);
