@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.7.1
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке: открыть в новой вкладке (в том числе в выбранном профиле), стандартное меню; тёмная тема для выбранных сайтов (в браузере универсального приложения)
+// @version      1.8.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема для выбранных сайтов (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -15,6 +15,7 @@
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_addStyle
+// @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
@@ -26,7 +27,6 @@
   const RADIUS = 62;          // радиус круга до центров кнопок
   const BTN = 52;             // размер кнопки
   const ICON = 40;            // размер значка внутри кнопки
-  const BYPASS_MS = 20000;    // сколько "стандартное меню" ждёт следующего долгого нажатия
   const MAX_CHARS = 400000;   // лимит текста страницы для озвучки
   const MAX_CHUNK = 220;      // максимальная длина одного фрагмента речи
   const CPS = 15;             // символов в секунду (оценка, если нет событий слов)
@@ -79,7 +79,7 @@
     scroll: 'Плавная прокрутка',
     tap: 'Тап по тексту, ссылкам и кнопкам: старт / стоп озвучки',
     swipe: 'Перемотка свайпами влево/вправо',
-    link: 'Меню на ссылке (долгое нажатие)',
+    link: 'Меню на ссылке или кнопке (долгое нажатие)',
     pad: 'Геймпад',
     media: 'Медиа-команды (наушники, шторка)',
     tilt: 'Читать поле: телефон вертикально'
@@ -157,11 +157,10 @@
 
   /* ---------- состояние ---------- */
 
-  let host = null, root = null, wrap = null, badge = null, badgeTimer = 0;
+  let host = null, root = null, wrap = null;
   let isOpen = false, openedAt = 0;
   let cx = 0, cy = 0;
-  let bypassUntil = 0;
-  let linkEl = null;
+  let linkEl = null;      // ссылка или кнопка, на которой открыто круговое меню
   const keep = [];
 
   const S = {
@@ -176,7 +175,6 @@
 
   // viewBox обрезан до самого рисунка, поэтому значки крупные и без лишних полей
   const ICONS = {
-    menu: '<svg viewBox="2 2 20 20"><circle cx="12" cy="5" r="2.6"/><circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="19" r="2.6"/></svg>',
     newtab: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>',
     profile: '<svg viewBox="2 2 20 20"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.2 3.6-7 8-7s8 2.8 8 7z"/></svg>'
   };
@@ -222,35 +220,25 @@
         .btn img.pi{width:100%;height:100%;border-radius:50%;object-fit:cover;pointer-events:none}
         .open .dot{opacity:1}
         .open .btn{opacity:1;transform:translate(calc(-50% + var(--x)),calc(-50% + var(--y))) scale(1)}
-        .badge{position:fixed;right:16px;bottom:16px;width:46px;height:46px;border-radius:50%;background:#48484a;color:#fff;
-          display:none;align-items:center;justify-content:center;pointer-events:none;
-          box-shadow:0 0 0 0 rgba(255,255,255,.6);animation:pulse 1.4s infinite}
-        .badge.on{display:flex}
-        .badge svg{width:30px;height:30px;fill:currentColor}
         .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);max-width:80vw;padding:8px 16px;border-radius:18px;
           background:rgba(30,30,32,.9);color:#fff;font:600 15px/1.25 system-ui,sans-serif;text-align:center;
           opacity:0;pointer-events:none;transition:opacity .15s}
         .toast.on{opacity:1}
-        @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,255,255,.55)}70%{box-shadow:0 0 0 14px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
       </style>
       <div class="wrap"><div class="dot"></div></div>
-      <div class="badge">${ICONS.menu}</div>
       <div class="toast"></div>`;
     wrap = root.querySelector('.wrap');
-    badge = root.querySelector('.badge');
     (document.documentElement || document).appendChild(host);
   }
 
-  // Меню показывается только на ссылках: вне ссылок остаётся родное меню браузера
+  // Меню показывается на ссылках и кнопках: вне них остаётся родное меню браузера
   function buildItems() {
     const items = [];
     if (cfg.link && linkEl) {
-      const href = linkEl.href;
-      items.push({ icon: ICONS.newtab, color: '#2e9e5b', run: () => { close(); openLink(href); } });
+      items.push({ icon: ICONS.newtab, color: '#2e9e5b', run: () => { close(); openTarget(linkEl); } });
       const pr = getProfiles();
-      if (pr.length > 1) items.push({ icon: ICONS.profile, color: '#e08a1e', run: () => showProfiles(href, pr) });
+      if (pr.length > 1) items.push({ icon: ICONS.profile, color: '#e08a1e', run: () => showProfiles(pr) });
     }
-    items.push({ icon: ICONS.menu, color: '#48484a', run: onStandard });
     return items;
   }
 
@@ -274,13 +262,13 @@
   }
 
   // Второй круг: по кнопке на каждый профиль (цвет и значок как на вкладках браузера), белое кольцо — профиль текущей вкладки
-  function showProfiles(href, pr) {
+  function showProfiles(pr) {
     const items = pr.map(p => ({
       icon: profileIcon(p),
       color: p.c || '#48484a',
       title: p.n,
       ring: !!p.cur,
-      run: () => { close(); openLink(href, p.i); }
+      run: () => { close(); openTarget(linkEl, p.i); }
     }));
     open(cx, cy, items);
   }
@@ -330,17 +318,6 @@
     isOpen = false;
     wrap.classList.remove('open');
     setTimeout(() => { if (!isOpen) wrap.querySelectorAll('.btn').forEach(b => b.remove()); }, 200);
-  }
-
-  function showBadge() {
-    ensureHost();
-    badge.classList.add('on');
-    clearTimeout(badgeTimer);
-    badgeTimer = setTimeout(hideBadge, BYPASS_MS);
-  }
-  function hideBadge() {
-    clearTimeout(badgeTimer);
-    if (badge) badge.classList.remove('on');
   }
 
   /* ---------- позиция в тексте ---------- */
@@ -1135,7 +1112,7 @@
     if (cfg.pad && anyPad()) padStart();
   }
 
-  /* ---------- ссылка ---------- */
+  /* ---------- открытие в новой вкладке ---------- */
 
   // profile (0-5) понимает только браузер универсального приложения; в остальных менеджерах опция игнорируется
   function openLink(href, profile) {
@@ -1147,15 +1124,94 @@
     window.open(href, '_blank', 'noopener');
   }
 
-  /* ---------- стандартное меню ---------- */
+  /* ---------- что нажали: ссылка или кнопка, открывающая страницу ---------- */
 
-  function onStandard() {
-    // Системное меню браузера программно открыть нельзя: следующее долгое нажатие
-    // пройдёт без перехвата. Пока ждём, в углу пульсирует значок ⋮.
-    bypassUntil = Date.now() + BYPASS_MS;
-    if (navigator.vibrate) navigator.vibrate(25);
-    close();
-    showBadge();
+  // Нажимаемым считается <a href>, кнопка, [role=button/link], элемент с onclick/data-href; в крайнем случае — любой элемент с курсором-«рукой»
+  const CLICKABLE = 'a[href],button,input[type=button],input[type=submit],input[type=image],[role=button],[role=link],[role=menuitem],[onclick],[data-href],[data-url],[data-link]';
+  const PROBE_MS = 1500;   // сколько ждём, что кнопка попытается открыть страницу
+
+  function targetFrom(e) {
+    const path = e.composedPath ? e.composedPath() : [e.target];
+    const chain = [];
+    for (const n of path) {
+      if (!n || n.nodeType !== 1) continue;
+      if (n === host) return null;
+      if (n === document.body || n === document.documentElement) break;
+      chain.push(n);
+      if (chain.length >= 8) break;
+    }
+    if (!chain.length || inEditable(chain[0])) return null;
+    let el = chain.find(n => { try { return n.matches(CLICKABLE); } catch (x) { return false; } });
+    if (!el) el = chain.find(n => { try { return getComputedStyle(n).cursor === 'pointer'; } catch (x) { return false; } });
+    return el || null;
+  }
+
+  // Адрес, который виден без клика
+  function staticUrl(el) {
+    try {
+      const a = el.closest('a[href]');
+      if (a) {
+        const h = (a.getAttribute('href') || '').trim();
+        if (h && h !== '#' && !/^javascript:/i.test(h)) return a.href;
+      }
+      for (const k of ['data-href', 'data-url', 'data-link']) {
+        const h = el.closest('[' + k + ']');
+        const v = h && (h.getAttribute(k) || '').trim();
+        if (v && /^(https?:\/\/|\/|\.\/|\.\.\/)/i.test(v)) return new URL(v, location.href).href;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // Нажимает кнопку и перехватывает переход, не давая странице уйти. Результат: {url}, {post:true} или null
+  function probeUrl(el) {
+    return new Promise(resolve => {
+      const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+      const undo = [];
+      let done = false;
+      const finish = r => {
+        if (done) return;
+        done = true;
+        undo.forEach(f => { try { f(); } catch (e) {} });
+        resolve(r);
+      };
+      try {   // location.href=…, location.assign, форма, роутер сайта
+        const nav = W.navigation;
+        if (nav && nav.addEventListener) {
+          const onNav = ev => {
+            if (ev.hashChange || ev.downloadRequest != null) return;
+            const u = ev.destination && ev.destination.url;
+            if (!u || u === location.href) return;
+            if (ev.cancelable) ev.preventDefault();
+            finish(ev.formData ? { post: true } : { url: u });
+          };
+          nav.addEventListener('navigate', onNav);
+          undo.push(() => nav.removeEventListener('navigate', onNav));
+        }
+      } catch (e) {}
+      try {   // window.open(url) на время клика
+        const had = Object.prototype.hasOwnProperty.call(W, 'open'), orig = W.open;
+        W.open = function (u) {
+          try { if (u) finish({ url: new URL(String(u), location.href).href }); } catch (e) {}
+          return null;
+        };
+        undo.push(() => { if (had) W.open = orig; else delete W.open; });
+      } catch (e) {}
+      setTimeout(() => finish(null), PROBE_MS);
+      try { el.click(); } catch (e) { finish(null); }
+    });
+  }
+
+  async function openTarget(el, profile) {
+    let url = staticUrl(el);
+    if (!url) {
+      toast('Определяю адрес…', 1600);
+      const r = await probeUrl(el);
+      if (r && r.post) { toast('Это отправка формы (POST) — в новой вкладке не открыть', 2800); return; }
+      url = r && r.url;
+    }
+    if (!url) { toast('Эта кнопка не открывает страницу', 2200); return; }
+    openLink(url, profile);
   }
 
   /* ---------- обновление ---------- */
@@ -1199,7 +1255,7 @@
 
   /* ---------- перехват событий ---------- */
 
-  const LP_MS = 420;       // долгое нажатие на ссылке, мс
+  const LP_MS = 420;       // долгое нажатие на ссылке или кнопке, мс
   const LP_MOVE = 10;      // сдвиг пальца больше этого — это прокрутка, не долгое нажатие
   let lp = null;           // ожидающее долгое нажатие { x, y, a, timer }
   let clickGuard = false;  // после долгого нажатия съедаем «отпускание», чтобы ссылка не открылась
@@ -1208,21 +1264,10 @@
     if (lp) { clearTimeout(lp.timer); lp = null; }
   }
 
-  // Ссылка под пальцем: идём по composedPath, чтобы находить <a> и внутри shadow DOM
-  function linkFrom(e) {
-    const path = e.composedPath ? e.composedPath() : [e.target];
-    for (const n of path) {
-      if (n && n.nodeType === 1 && n.tagName === 'A' && n.hasAttribute('href')) {
-        return /^javascript:/i.test(n.getAttribute('href') || '') ? null : n;
-      }
-    }
-    return null;
-  }
-
-  function showLinkMenu(x, y, a) {
-    linkEl = a;
+  function showLinkMenu(x, y, el) {
+    linkEl = el;
     const items = buildItems();
-    if (items.length < 2) return false;
+    if (!items.length) return false;
     open(x, y, items);
     buzz(20);
     return true;
@@ -1232,20 +1277,19 @@
   // touchstart, и тогда браузер contextmenu вообще не присылает
   function lpFire() {
     const s = lp; lp = null;
-    if (!s || isOpen || !cfg.link || Date.now() < bypassUntil) return;
+    if (!s || isOpen || !cfg.link) return;
     if (showLinkMenu(s.x, s.y, s.a)) clickGuard = true;
   }
 
   window.addEventListener('contextmenu', e => {
-    if (Date.now() < bypassUntil) { bypassUntil = 0; hideBadge(); return; }   // родное меню, один раз
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
     if (inEditable(t)) return;                      // поля ввода не трогаем
     if (host && e.composedPath && e.composedPath().includes(host)) { e.preventDefault(); return; }
     // меню уже открыто нашим таймером — родное не нужно
     if (isOpen && performance.now() - openedAt < 1500) { e.preventDefault(); e.stopPropagation(); return; }
     if (!cfg.link) return;
-    const a = linkFrom(e);
-    if (!a) return;                                 // не ссылка (обычный текст и т.п.): родное меню браузера
+    const a = targetFrom(e);
+    if (!a) return;                                 // не ссылка и не кнопка (обычный текст и т.п.): родное меню браузера
     lpCancel();
     if (showLinkMenu(e.clientX, e.clientY, a)) { e.preventDefault(); e.stopPropagation(); }
   }, true);
@@ -1269,9 +1313,9 @@
     const inHost = host && e.composedPath().includes(host);
     if (isOpen && !inHost) close();
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
-    if (inHost || !cfg.link || !e.isPrimary || e.pointerType === 'mouse' || Date.now() < bypassUntil) return;
-    const a = linkFrom(e);
-    if (!a || inEditable(e.composedPath()[0])) return;
+    if (inHost || !cfg.link || !e.isPrimary || e.pointerType === 'mouse') return;
+    const a = targetFrom(e);
+    if (!a) return;
     lp = { x: e.clientX, y: e.clientY, a, timer: setTimeout(lpFire, LP_MS) };
   }, true);
 
