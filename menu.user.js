@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.8.0
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема для выбранных сайтов (в браузере универсального приложения)
+// @version      1.9.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -33,6 +33,7 @@
   const SCROLL_MAX = 2400;    // максимальная скорость прокрутки, px/с
   const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
   const IS_TOP = window.top === window;   // геймпад, наклон и медиа-кнопки работают только в самой странице, не во фреймах
+  const SITE = location.hostname;         // для запоминания выбора тёмной темы по сайтам
 
   // Кнопки геймпада (стандартная раскладка Xbox: 0=A 1=B 2=X 3=Y 4=LB 5=RB, 12-15=крестовина).
   // Если у геймпада другая нумерация — в меню Tampermonkey включите «Определить кнопки геймпада»
@@ -71,7 +72,7 @@
 
   /* ---------- настройки (выключатели) ---------- */
 
-  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true };
+  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true, darkAuto: true };
   const LABELS = {
     read: 'Озвучка',
     hlSentence: 'Подсветка предложения',
@@ -82,7 +83,8 @@
     link: 'Меню на ссылке или кнопке (долгое нажатие)',
     pad: 'Геймпад',
     media: 'Медиа-команды (наушники, шторка)',
-    tilt: 'Читать поле: телефон вертикально'
+    tilt: 'Читать поле: телефон вертикально',
+    darkAuto: 'Тёмная тема сама на светлых сайтах'
   };
   const cfg = {};
   for (const k of Object.keys(DEF)) {
@@ -115,6 +117,7 @@
     menuIds.forEach(id => { try { GM_unregisterMenuCommand(id); } catch (e) {} });
     menuIds = [];
     for (const k of Object.keys(LABELS)) {
+      if (k === 'darkAuto' && darkState() < 0) continue;     // нет тёмной темы приложения — пункт не нужен
       menuIds.push(GM_registerMenuCommand((cfg[k] ? '✅ ' : '⬜ ') + LABELS[k], () => {
         cfg[k] = !cfg[k];
         try { GM_setValue(k, cfg[k]); } catch (e) {}
@@ -138,7 +141,9 @@
     const dark = darkState();
     if (dark >= 0) {
       menuIds.push(GM_registerMenuCommand(dark ? '🌙 Тёмная тема на этом сайте: вкл' : '☀️ Тёмная тема на этом сайте: выкл', () => {
-        try { GM_openInTab.darkTheme(!darkState()); } catch (e) {}
+        const on = !darkState();
+        try { GM_setValue('dm:' + SITE, on ? 1 : 0); } catch (e) {}   // свой выбор важнее автоматики: на этом сайте она больше не вмешивается
+        try { GM_openInTab.darkTheme(on); } catch (e) {}
         buildMenu();
       }, { autoClose: false }));
     }
@@ -153,6 +158,55 @@
       const v = typeof f === 'function' ? f() : -1;
       return typeof v === 'number' ? v : -1;
     } catch (e) { return -1; }
+  }
+
+  /* ---------- тёмная тема сама на светлых сайтах ---------- */
+
+  // Яркость цвета из rgb()/rgba() от 0 (чёрный) до 1 (белый); null — прозрачный или незнакомый формат
+  function lumOf(c) {
+    const m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+%?))?/.exec(c || '');
+    if (!m) return null;
+    const a = m[4] == null ? 1 : (/%$/.test(m[4]) ? parseFloat(m[4]) / 100 : parseFloat(m[4]));
+    if (a < 0.5) return null;
+    const ch = v => { v = v / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * ch(+m[1]) + 0.7152 * ch(+m[2]) + 0.0722 * ch(+m[3]);
+  }
+
+  // Тёмная ли страница сейчас: смотрим фон в нескольких точках экрана (у многих сайтов фон не на body, а на внутренних блоках).
+  // true — тёмная, false — светлая, null — страница ещё пуста и судить рано
+  function pageIsDark() {
+    try {
+      if (!document.body || !document.body.children.length) return null;
+      const cs = getComputedStyle(document.documentElement).colorScheme || '';
+      const defL = /dark/.test(cs) && !/light/.test(cs) ? 0 : 1;   // фон не задан: белый, если сайт не объявил только тёмную схему
+      let dark = 0, light = 0, seen = 0;
+      for (const p of [[0.5, 0.3], [0.5, 0.6], [0.2, 0.5], [0.8, 0.5], [0.5, 0.85]]) {
+        let el = document.elementFromPoint(innerWidth * p[0], innerHeight * p[1]);
+        if (!el) continue;
+        seen++;
+        let L = null;
+        for (; el && L == null; el = el.parentElement) L = lumOf(getComputedStyle(el).backgroundColor);
+        if (L == null) L = defL;
+        if (L < 0.18) dark++; else light++;
+      }
+      if (!seen) return null;
+      return dark > light;
+    } catch (e) { return null; }
+  }
+
+  // Включает тёмную тему приложения на светлом сайте. Выключать сама не будет: если вы отключили тему на сайте
+  // из меню, этот выбор запоминается и автоматика на сайте больше не вмешивается. Результат: 'wait' — попробовать позже
+  function autoDark() {
+    if (!IS_TOP || !cfg.darkAuto) return;
+    if (!/^https?:$/.test(location.protocol) || !/html/i.test(document.contentType || 'text/html')) return;
+    if (darkState() !== 0) return;                                 // нет такой возможности или уже включена
+    let manual = null;
+    try { manual = GM_getValue('dm:' + SITE, null); } catch (e) {}
+    if (manual != null) return;                                    // на этом сайте выбор сделан вручную
+    const dark = pageIsDark();
+    if (dark === null) return 'wait';
+    if (dark) return;                                              // сайт и так тёмный
+    try { GM_openInTab.darkTheme(true); toast('🌙 Тёмная тема', 1200); } catch (e) {}
   }
 
   /* ---------- состояние ---------- */
@@ -735,6 +789,7 @@
     if (k === 'pad') { if (cfg.pad) { if (anyPad()) padStart(); } else padStop(); }
     if (k === 'media') { if (cfg.media) mediaSync(); else mediaTeardown(); }
     if (k === 'tilt') { if (cfg.tilt) { if (lastField) tiltStart(); } else tiltStop(); }
+    if (k === 'darkAuto' && cfg.darkAuto) autoDark();
   }
 
   /* ---------- скорость речи ---------- */
@@ -1252,6 +1307,21 @@
   buildMenu();
   // на document-start адрес вкладки в приложении мог ещё не обновиться: пункт про тёмную тему перестраиваем после загрузки
   if (IS_TOP) document.addEventListener('DOMContentLoaded', buildMenu);
+
+  // Автоматическая тёмная тема: проверяем после загрузки, когда фон страницы уже нарисован; у страниц,
+  // которые рисуются позже (сайты на JS), повторяем проверку несколько раз
+  if (IS_TOP) {
+    const run = () => {
+      let n = 0;
+      const tick = () => {
+        if (autoDark() === 'wait' && ++n < 4) setTimeout(tick, 1000);
+        else buildMenu();
+      };
+      setTimeout(tick, 700);
+    };
+    if (document.readyState === 'complete') run();
+    else window.addEventListener('load', run, { once: true });
+  }
 
   /* ---------- перехват событий ---------- */
 
