@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.9.1
+// @version      1.9.2
 // @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
@@ -235,6 +235,7 @@
   const S = {
     state: 'idle',        // idle | playing | paused
     doc: null, chunks: [], gen: 0,
+    u: null,              // фраза, которую озвучивают сейчас: события любых других фраз игнорируются
     ci: 0, cs: 0, ce: 0, t0: 0,
     lastIdx: 0, boundaryAt: 0, resumeIdx: 0,
     raf: 0, lastTs: 0, noScrollUntil: 0, ownScrollAt: 0, sy: null, sp: null,
@@ -594,50 +595,77 @@
 
   /* ---------- озвучка ---------- */
 
+  // Пауза между cancel() и новой фразой: у движков (особенно на Android) остановка асинхронна,
+  // и фраза, поставленная сразу после cancel(), может сама получить чужое «закончилось»
+  const RESPEAK_MS = 120;
+
   function speakFrom(idx) {
     if (!('speechSynthesis' in window) || !S.doc) return;
     const ci = chunkAt(idx);
     if (ci < 0) return;
     S.gen++;
     const my = S.gen;
+    S.u = null;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'playing';
     startLoop();
     mediaSync();
-    setTimeout(() => playChunk(my, ci, idx), 60);
+    setTimeout(() => playChunk(my, ci, idx), RESPEAK_MS);
   }
 
-  function playChunk(my, ci, from) {
+  function playChunk(my, ci, from, tries) {
     if (my !== S.gen) return;
     if (ci >= S.chunks.length) { stopReading(); return; }
     const c = S.chunks[ci];
     const s = Math.max(c.s, from || 0);
     const text = S.doc.text;
-    const r0 = rate;
-    let started = 0;
-    S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = performance.now();
+    const r0 = rate, t1 = performance.now();
+    let started = 0, painted = false, finished = false;
+    S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = t1;
     S.lastIdx = s; S.boundaryAt = 0;
     mediaPosition();
     try { S.sp = scrollParentOf(pos(s).node.parentElement); } catch (e) { S.sp = null; }
 
     const u = new SpeechSynthesisUtterance(text.slice(s, c.e));
+    S.u = u;
     u.lang = S.lang || document.documentElement.lang || navigator.language || 'ru-RU';
     u.rate = rate;
-    // речь реально началась (после задержки движка): от этого момента считаем место чтения
+
+    // событие принимаем, только если это текущая фраза текущего запуска: поздние и повторные события
+    // прошлых фраз (после перемотки, cancel(), ошибки) иначе сдвигали бы чтение и подсветку вперёд
+    const live = () => my === S.gen && S.u === u;
+
+    // Подсветка предложения появляется, когда речь реально началась, а не когда фраза поставлена в очередь:
+    // после перемотки движок ещё может договаривать прошлую фразу, и подсветка не должна убегать вперёд звука.
+    // Если движок не присылает onstart, подсвечиваем через 0,8 с
+    const paint = () => {
+      if (painted || !live()) return;
+      painted = true;
+      const sp = sentSpan(ci);
+      paintSentence(sp.s, sp.e);
+    };
     u.onstart = () => {
-      if (my !== S.gen) return;
+      if (!live()) return;
       started = performance.now();
-      S.t0 = started;
+      S.t0 = started;                               // от начала речи считаем место чтения
+      paint();
     };
     u.onboundary = ev => {
-      if (my !== S.gen) return;
+      if (!live()) return;
       if (ev.name && ev.name !== 'word') return;
       S.lastIdx = s + ev.charIndex;
       S.boundaryAt = performance.now();
       paintWord(S.lastIdx, ev.charLength);
     };
     u.onend = () => {
-      if (my !== S.gen) return;
+      if (!live() || finished) return;
+      finished = true;
+      // «закончилось», не начавшись, за долю секунды у длинной фразы — движок её отбросил (бывает после cancel()):
+      // читаем эту же фразу ещё раз, а не перескакиваем к следующей
+      if (!started && performance.now() - t1 < 250 && c.e - s > 40 && (tries || 0) < 2) {
+        setTimeout(() => playChunk(my, ci, from, (tries || 0) + 1), 150);
+        return;
+      }
       // движок не присылал события слов: по фактической длительности фразы уточняем скорость голоса
       if (started && !S.boundaryAt) {
         const dt = (performance.now() - started) / 1000, n = c.e - s;
@@ -646,8 +674,9 @@
       playChunk(my, ci + 1);
     };
     u.onerror = ev => {
-      if (my !== S.gen) return;
+      if (!live() || finished) return;
       if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
+      finished = true;
       if (ev && ev.error === 'not-allowed') {      // браузер требует касания страницы — не перебираем все фрагменты
         stopReading();
         toast('Браузер не разрешил озвучку: коснитесь экрана');
@@ -657,14 +686,14 @@
     };
     keep.push(u);
     if (keep.length > 6) keep.shift();
-    const sp = sentSpan(ci);
-    paintSentence(sp.s, sp.e);
+    setTimeout(paint, 800);
     speechSynthesis.speak(u);
   }
 
   function pauseReading() {
     if (S.state !== 'playing') return;
     S.gen++;
+    S.u = null;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.resumeIdx = S.boundaryAt ? S.lastIdx : S.cs;
     S.state = 'paused';
@@ -678,6 +707,7 @@
 
   function stopReading() {
     S.gen++;
+    S.u = null;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'idle';
     S.doc = null; S.chunks = []; S.sp = null; S.sy = null; S.lang = null;
