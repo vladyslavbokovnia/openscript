@@ -17,6 +17,7 @@ Userscripts для Tampermonkey (Android, Kiwi). Чтобы установить
 | SUBVOICE | Читает субтитры вслух с переводом на русский, перемотка наклонами, субтитры по ссылке YouTube/Bilibili | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js |
 | Прятать панели при прокрутке | На любых сайтах прячет закреплённые шапки и нижние меню при прокрутке вниз, возвращает при прокрутке вверх; настройки в меню Tampermonkey | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/hide-panels.user.js |
 | te_phantom_opera | см. заголовок файла | https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js |
+| voice-over-translation (VOT) | Закадровый перевод видео и субтитры на разных сайтах (сторонний скрипт [ilyhalight](https://github.com/ilyhalight/voice-over-translation)) | https://raw.githubusercontent.com/ilyhalight/voice-over-translation/master/dist/vot.user.js |
 
 ## Схема ссылки
 
