@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.9.0
+// @version      1.9.1
 // @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения)
 // @license      MIT
 // @match        *://*/*
@@ -29,7 +29,7 @@
   const ICON = 40;            // размер значка внутри кнопки
   const MAX_CHARS = 400000;   // лимит текста страницы для озвучки
   const MAX_CHUNK = 220;      // максимальная длина одного фрагмента речи
-  const CPS = 15;             // символов в секунду (оценка, если нет событий слов)
+  const CPS = 15;             // символов в секунду на скорости 1× (начальная оценка: дальше скрипт подстраивает её по факту)
   const SCROLL_MAX = 2400;    // максимальная скорость прокрутки, px/с
   const RAW = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js';
   const IS_TOP = window.top === window;   // геймпад, наклон и медиа-кнопки работают только в самой странице, не во фреймах
@@ -110,6 +110,21 @@
   try { rate = Math.max(0.5, Math.min(3, Number(GM_getValue('rate', 1)) || 1)); } catch (e) {}
   try { GM_addValueChangeListener('rate', (n, o, nv) => { rate = Math.max(0.5, Math.min(3, Number(nv) || 1)); }); } catch (e) {}
   let padDebug = false;   // режим «показывать номер нажатой кнопки»
+
+  // Реальная скорость голоса, символов в секунду на 1×: по ней оценивается место чтения, когда движок не присылает
+  // события слов (так на Android). Подстраивается по длительности уже прочитанных фраз и запоминается
+  let calCps = CPS, calDirty = false;
+  try { calCps = Math.max(6, Math.min(40, Number(GM_getValue('cps', CPS)) || CPS)); } catch (e) {}
+  function calibrate(v) {
+    if (!(v > 0)) return;
+    calCps = Math.max(6, Math.min(40, calCps * 0.6 + v * 0.4));
+    calDirty = true;
+  }
+  function saveCps() {
+    if (!calDirty) return;
+    calDirty = false;
+    try { GM_setValue('cps', Math.round(calCps * 10) / 10); } catch (e) {}
+  }
 
   let menuIds = [];
   function buildMenu() {
@@ -439,27 +454,56 @@
     return { segs, map, text };
   }
 
+  // Сокращения, после которых точка не заканчивает предложение
+  const ABBR = new Set(['гг', 'ул', 'пр', 'просп', 'пер', 'пл', 'им', 'др', 'см', 'рис', 'стр', 'табл', 'тыс', 'млн', 'млрд', 'руб', 'коп', 'напр', 'проф', 'акад', 'доц', 'обл',
+    'янв', 'февр', 'апр', 'авг', 'сент', 'окт', 'нояб', 'дек',
+    'mr', 'mrs', 'ms', 'dr', 'prof', 'sr', 'jr', 'vs', 'fig', 'st', 'inc', 'ltd', 'mt', 'approx',
+    'jan', 'feb', 'mar', 'apr', 'jun', 'jul', 'aug', 'sep', 'sept', 'oct', 'nov', 'dec']);
+
+  // true — одиночная точка в позиции i (end — позиция после неё) НЕ конец предложения: инициалы, «т. е.», «г. Москва», «Dr. Smith»
+  function notEnd(text, i, end) {
+    const w = /(\p{L}+)$/u.exec(text.slice(Math.max(0, i - 12), i));
+    if (!w) return false;                                  // перед точкой цифра или знак — конец
+    const word = w[1], low = word.toLowerCase();
+    let j = end;
+    while (j < text.length && text[j] === ' ') j++;
+    const nx = text[j];
+    if (word.length <= 3 && nx && /\p{Ll}/u.test(nx)) return true;     // короткое слово и дальше маленькая буква: «т. е. это», «etc. and»
+    if (word.length === 1 && /\p{Lu}/u.test(word)) return true;        // инициалы «А. С. Пушкин»
+    if (ABBR.has(low)) return true;
+    if (low === 'г' && !/\d\s*$/.test(text.slice(Math.max(0, i - 6), i - 1))) return true;   // «г. Москва», но не «в 2020 г.»
+    return false;
+  }
+
+  // Делит текст на фразы для озвучки. cont:true у второй и следующих частей слишком длинного предложения:
+  // при перемотке и подсветке они считаются одним предложением с первой частью
   function makeChunks(text) {
     const out = [];
     const push = (s, e) => {
       while (s < e && text[s] === ' ') s++;
       while (e > s && text[e - 1] === ' ') e--;
       if (e <= s || !/[\p{L}\p{N}]/u.test(text.slice(s, e))) return;
+      let cont = false;
       while (e - s > MAX_CHUNK) {
         let cut = text.lastIndexOf(' ', s + MAX_CHUNK);
         if (cut <= s + 40) cut = s + MAX_CHUNK;
-        out.push({ s, e: cut });
+        out.push({ s, e: cut, cont });
+        cont = true;
         s = cut;
         while (s < e && text[s] === ' ') s++;
       }
-      out.push({ s, e });
+      out.push({ s, e, cont });
     };
-    const re = /[^\n]+?(?:[.!?…。]+["'»”)\]]*(?=\s|$)|(?=\n)|$)/g;
-    let m;
+    const re = /[.!?…。]+["'»”)\]]*(?=\s|$)|\n/g;
+    let start = 0, m;
     while ((m = re.exec(text))) {
-      if (!m[0]) { re.lastIndex++; continue; }
-      push(m.index, m.index + m[0].length);
+      if (m[0] === '\n') { push(start, m.index); start = m.index + 1; continue; }
+      const end = m.index + m[0].length;
+      if (m[0] === '.' && notEnd(text, m.index, end)) continue;
+      push(start, end);
+      start = end;
     }
+    push(start, text.length);
     return out;
   }
 
@@ -471,6 +515,22 @@
       if (cs[mid].e > idx) { ans = mid; hi = mid - 1; } else lo = mid + 1;
     }
     return ans;
+  }
+
+  // Начало предложения, в которое входит фраза i
+  function sentStart(i) {
+    while (i > 0 && S.chunks[i] && S.chunks[i].cont) i--;
+    return i;
+  }
+
+  // Границы всего предложения, в которое входит фраза ci (для подсветки)
+  function sentSpan(ci) {
+    const c = S.chunks[ci];
+    if (!c) return { s: S.cs, e: S.ce };
+    let a = ci, b = ci;
+    while (a > 0 && S.chunks[a].cont) a--;
+    while (b + 1 < S.chunks.length && S.chunks[b + 1].cont) b++;
+    return { s: S.chunks[a].s, e: S.chunks[b].e };
   }
 
   function toGlobal(node, offset) {
@@ -528,7 +588,8 @@
   function repaint() {
     if (!HL) return;
     if (S.state === 'idle') { HL.sent.clear(); HL.word.clear(); return; }
-    paintSentence(S.cs, S.ce);
+    const sp = sentSpan(S.ci);
+    paintSentence(sp.s, sp.e);
   }
 
   /* ---------- озвучка ---------- */
@@ -552,6 +613,8 @@
     const c = S.chunks[ci];
     const s = Math.max(c.s, from || 0);
     const text = S.doc.text;
+    const r0 = rate;
+    let started = 0;
     S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = performance.now();
     S.lastIdx = s; S.boundaryAt = 0;
     mediaPosition();
@@ -560,6 +623,12 @@
     const u = new SpeechSynthesisUtterance(text.slice(s, c.e));
     u.lang = S.lang || document.documentElement.lang || navigator.language || 'ru-RU';
     u.rate = rate;
+    // речь реально началась (после задержки движка): от этого момента считаем место чтения
+    u.onstart = () => {
+      if (my !== S.gen) return;
+      started = performance.now();
+      S.t0 = started;
+    };
     u.onboundary = ev => {
       if (my !== S.gen) return;
       if (ev.name && ev.name !== 'word') return;
@@ -567,7 +636,15 @@
       S.boundaryAt = performance.now();
       paintWord(S.lastIdx, ev.charLength);
     };
-    u.onend = () => { if (my === S.gen) playChunk(my, ci + 1); };
+    u.onend = () => {
+      if (my !== S.gen) return;
+      // движок не присылал события слов: по фактической длительности фразы уточняем скорость голоса
+      if (started && !S.boundaryAt) {
+        const dt = (performance.now() - started) / 1000, n = c.e - s;
+        if (n >= 25 && dt > 1) calibrate(n / dt / r0);
+      }
+      playChunk(my, ci + 1);
+    };
     u.onerror = ev => {
       if (my !== S.gen) return;
       if (ev && (ev.error === 'canceled' || ev.error === 'interrupted')) return;
@@ -580,7 +657,8 @@
     };
     keep.push(u);
     if (keep.length > 6) keep.shift();
-    paintSentence(s, c.e);
+    const sp = sentSpan(ci);
+    paintSentence(sp.s, sp.e);
     speechSynthesis.speak(u);
   }
 
@@ -604,6 +682,7 @@
     S.state = 'idle';
     S.doc = null; S.chunks = []; S.sp = null; S.sy = null; S.lang = null;
     if (HL) { HL.sent.clear(); HL.word.clear(); }
+    saveCps();
     mediaTeardown();
   }
 
@@ -620,7 +699,7 @@
   function focusIdx() {
     const now = performance.now();
     if (S.boundaryAt && now - S.boundaryAt < 2500) return S.lastIdx;
-    const est = S.cs + Math.floor((now - S.t0) / 1000 * CPS * rate);
+    const est = S.cs + Math.floor((now - S.t0) / 1000 * calCps * rate);
     return Math.min(S.ce - 1, Math.max(S.cs, est));
   }
 
@@ -863,11 +942,19 @@
     speakFrom(S.chunks[ci].s);
   }
 
+  // Шаг по предложениям. Длинное предложение, разбитое на части по 220 символов, для перемотки остаётся одним.
+  // «Назад»: из середины предложения (или через 2,5 с после его начала) — в начало текущего, иначе в начало предыдущего
   function skipSentence(d) {
     if (S.state === 'idle' || !S.chunks.length) return;
-    // «назад» через пару секунд после начала фразы — сначала в её начало, как в плеерах
-    const restart = d < 0 && S.state === 'playing' && performance.now() - S.t0 > 2500;
-    jumpChunk(restart ? S.ci : S.ci + d);
+    if (d > 0) {
+      let j = S.ci + 1;
+      while (j < S.chunks.length && S.chunks[j].cont) j++;
+      jumpChunk(j);
+      return;
+    }
+    const cur = sentStart(S.ci);
+    if (cur !== S.ci || (S.state === 'playing' && performance.now() - S.t0 > 2500)) jumpChunk(cur);
+    else jumpChunk(sentStart(Math.max(0, S.ci - 1)));
   }
 
   function paraStart(i) {
@@ -879,6 +966,7 @@
     return k < 0 || t[k] === '\n';
   }
 
+  // «Назад» по абзацам ведёт себя так же: из середины абзаца (или через 2,5 с после его начала) — в начало текущего
   function skipPara(d) {
     if (S.state === 'idle' || !S.chunks.length) return;
     let i = S.ci;
@@ -886,15 +974,21 @@
       i++;
       while (i < S.chunks.length && !paraStart(i)) i++;
     } else {
-      if (paraStart(i)) i--;
-      while (i > 0 && !paraStart(i)) i--;
+      let p = i;
+      while (p > 0 && !paraStart(p)) p--;
+      const restart = p < i || (S.state === 'playing' && performance.now() - S.t0 > 2500);
+      if (restart) i = p;
+      else {
+        i = Math.max(0, p - 1);
+        while (i > 0 && !paraStart(i)) i--;
+      }
     }
     jumpChunk(i);
   }
 
   function seekToTime(sec) {
     if (S.state === 'idle' || !S.doc || !(sec >= 0)) return;
-    const idx = Math.min(S.doc.text.length - 1, Math.round(sec * CPS * rate));
+    const idx = Math.min(S.doc.text.length - 1, Math.round(sec * calCps * rate));
     let ci = chunkAt(idx);
     if (ci < 0) ci = S.chunks.length - 1;
     jumpChunk(ci);
@@ -1062,7 +1156,7 @@
   function mediaPosition() {
     if (!MS || !msOn || !S.doc || !MS.setPositionState) return;
     try {
-      const cps = CPS * rate, dur = Math.max(1, S.doc.text.length / cps);
+      const cps = calCps * rate, dur = Math.max(1, S.doc.text.length / cps);
       MS.setPositionState({ duration: dur, playbackRate: 1, position: Math.min(dur, S.cs / cps) });
     } catch (e) {}
   }
