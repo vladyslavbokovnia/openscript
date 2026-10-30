@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.9.2
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения)
+// @version      1.10.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -17,6 +17,7 @@
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @connect      raw.githubusercontent.com
+// @connect      translate.googleapis.com
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js
 // ==/UserScript==
@@ -72,7 +73,7 @@
 
   /* ---------- настройки (выключатели) ---------- */
 
-  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true, darkAuto: true };
+  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true, darkAuto: true, trAuto: false };
   const LABELS = {
     read: 'Озвучка',
     hlSentence: 'Подсветка предложения',
@@ -84,7 +85,8 @@
     pad: 'Геймпад',
     media: 'Медиа-команды (наушники, шторка)',
     tilt: 'Читать поле: телефон вертикально',
-    darkAuto: 'Тёмная тема сама на светлых сайтах'
+    darkAuto: 'Тёмная тема сама на светлых сайтах',
+    trAuto: 'Переводить на русский сразу, если страница не на русском'
   };
   const cfg = {};
   for (const k of Object.keys(DEF)) {
@@ -162,6 +164,8 @@
         buildMenu();
       }, { autoClose: false }));
     }
+    if (TR.on) menuIds.push(GM_registerMenuCommand('↩️ Показать оригинал', trRestore));
+    else if (TR.need) menuIds.push(GM_registerMenuCommand('🌐 Перевести на русский', () => trStart(true)));
     menuIds.push(GM_registerMenuCommand('🔄 Обновить', checkUpdate));
   }
 
@@ -628,7 +632,7 @@
 
     const u = new SpeechSynthesisUtterance(text.slice(s, c.e));
     S.u = u;
-    u.lang = S.lang || document.documentElement.lang || navigator.language || 'ru-RU';
+    u.lang = S.lang || (TR.on ? 'ru-RU' : '') || document.documentElement.lang || navigator.language || 'ru-RU';
     u.rate = rate;
 
     // событие принимаем, только если это текущая фраза текущего запуска: поздние и повторные события
@@ -899,6 +903,7 @@
     if (k === 'media') { if (cfg.media) mediaSync(); else mediaTeardown(); }
     if (k === 'tilt') { if (cfg.tilt) { if (lastField) tiltStart(); } else tiltStop(); }
     if (k === 'darkAuto' && cfg.darkAuto) autoDark();
+    if (k === 'trAuto' && cfg.trAuto && TR.need && !TR.on) trStart(false);
   }
 
   /* ---------- скорость речи ---------- */
@@ -1393,6 +1398,281 @@
     openLink(url, profile);
   }
 
+  /* ---------- перевод страницы на русский ---------- */
+
+  // Перевод идёт через Google Переводчик (адрес translate.googleapis.com, без ключа): текст страницы уходит туда.
+  // Меняются сами текстовые узлы, поэтому озвучка читает уже русский текст, а «Показать оригинал» возвращает всё как было.
+  const TR_URL = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=ru&dt=t&q=';
+  const TR_BATCH = 1500;   // длина одного запроса в закодированном виде
+  const TR_PASS = 40000;   // сколько символов переводим за один проход (остальное — по мере прокрутки)
+  const TR_PAR = 3;        // запросов одновременно
+
+  const TR = { on: false, busy: false, need: false, auto: false, lang: null, src: null, gen: 0, map: new Map(), obs: null, timer: 0, failUntil: 0 };
+
+  // Язык страницы по её тексту (атрибуту lang на сайтах часто верить нельзя):
+  // 'ru' — русский, 'uk' — украинский, 'other' — любой другой, null — текста пока мало
+  function trLang() {
+    try {
+      if (!document.body) return null;
+      let s = '', n;
+      const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (s.length < 3000 && (n = w.nextNode())) {
+        const p = n.parentElement;
+        if (!p || /^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA)$/i.test(p.tagName)) continue;
+        s += n.data + ' ';
+      }
+      let all = 0, cyr = 0, uk = 0, ru = 0;
+      for (const ch of s) {
+        if (!/\p{L}/u.test(ch)) continue;
+        all++;
+        if (/[\u0400-\u04FF]/.test(ch)) {
+          cyr++;
+          if ('іїєґІЇЄҐ'.includes(ch)) uk++;
+          else if ('ыэёЫЭЁ'.includes(ch)) ru++;
+        }
+      }
+      if (all < 30) return null;
+      if (cyr / all < 0.5) return 'other';
+      if (uk / cyr >= 0.01) return 'uk';
+      const hl = (document.documentElement.lang || '').toLowerCase();
+      return (ru / cyr >= 0.004 || /^ru/.test(hl)) ? 'ru' : 'other';
+    } catch (e) { return null; }
+  }
+
+  // Нужен ли перевод: страница не на русском и текста на ней достаточно
+  function trCheck() {
+    if (!IS_TOP || TR.on) return;
+    if (!/html/i.test(document.contentType || 'text/html')) { TR.need = false; return; }
+    TR.lang = trLang();
+    TR.need = TR.lang != null && TR.lang !== 'ru';
+  }
+
+  // Текстовые узлы для перевода: сначала то, что на экране и ниже, потом то, что выше
+  function trNodes() {
+    const out = [];
+    if (!document.body) return out;
+    const info = new Map();     // родитель -> 0 нельзя, 1 можно, 2 можно, но переносы строк важны (white-space: pre*)
+    const kind = p => {
+      let v = info.get(p);
+      if (v === undefined) {
+        v = 0;
+        try {
+          if (!/^(SCRIPT|STYLE|NOSCRIPT|TEXTAREA|SELECT|OPTION|CODE|PRE|KBD|SAMP)$/i.test(p.tagName) &&
+              !p.closest('svg,code,pre,[translate="no"],.notranslate') && !inEditable(p) &&
+              (p.checkVisibility ? p.checkVisibility({ checkVisibilityCSS: true }) : p.getClientRects().length > 0)) {
+            v = /^pre/.test(getComputedStyle(p).whiteSpace) ? 2 : 1;
+          }
+        } catch (e) {}
+        info.set(p, v);
+      }
+      return v;
+    };
+    const list = [];
+    const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const p = n.parentElement;
+      if (!p || !/\p{L}/u.test(n.data)) continue;
+      const e = TR.map.get(n);
+      if (e && e.t === n.data) continue;                     // уже переведён
+      const k = kind(p);
+      if (!k || (k === 2 && n.data.includes('\n'))) continue;
+      list.push(n);
+    }
+    const bottom = new Map(), after = [], before = [];
+    for (const nd of list) {
+      const p = nd.parentElement;
+      let b = bottom.get(p);
+      if (b === undefined) { b = p.getBoundingClientRect().bottom; bottom.set(p, b); }
+      (b > -40 ? after : before).push(nd);
+    }
+    let total = 0;
+    for (const nd of after.concat(before)) {
+      if (total > TR_PASS) break;
+      out.push(nd);
+      total += nd.data.length;
+    }
+    return out;
+  }
+
+  // Слишком длинный кусок режем на части (по предложениям, потом по пробелам), чтобы адрес запроса не выходил за предел
+  function trPieces(s) {
+    const out = [];
+    while (s) {
+      let len = 0, i = 0, sent = 0, space = 0;
+      for (const ch of s) {
+        const l = encodeURIComponent(ch).length;
+        if (len + l > TR_BATCH) break;
+        len += l; i += ch.length;
+        if ('.!?。！？'.includes(ch)) sent = i; else if (ch === ' ') space = i;
+      }
+      if (i >= s.length) { out.push(s); break; }
+      const cut = sent > i / 3 ? sent : space > i / 3 ? space : i;
+      out.push(s.slice(0, cut));
+      s = s.slice(cut).replace(/^\s+/, '');
+    }
+    return out.map(x => x.trim()).filter(Boolean);
+  }
+
+  function trReq(q) {
+    return new Promise((res, rej) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url: TR_URL + encodeURIComponent(q),
+        timeout: 20000,
+        onload(r) {
+          try {
+            if (r.status !== 200) throw new Error('HTTP ' + r.status);
+            const d = JSON.parse(r.responseText);
+            res({ t: d[0].map(x => (x && x[0]) || '').join(''), lang: d[2] });
+          } catch (e) { rej(e); }
+        },
+        onerror: rej,
+        ontimeout: rej
+      });
+    });
+  }
+
+  // Кусочки идут одним запросом, по одному на строку. Если число строк в ответе не сошлось — делим пополам, пока не сойдётся
+  async function trBatch(b) {
+    const r = await trReq(b.map(u => u.text).join('\n'));
+    if (!TR.src) TR.src = r.lang;
+    const parts = r.t.split('\n');
+    if (parts.length === b.length) return parts.map(x => x.trim());
+    if (b.length === 1) return [r.t.replace(/\s+/g, ' ').trim()];
+    const h = b.length >> 1;
+    const a = await trBatch(b.slice(0, h));
+    return a.concat(await trBatch(b.slice(h)));
+  }
+
+  function trApply(it) {
+    const n = it.n;
+    if (!n.isConnected || n.data !== it.raw) return;         // страница успела изменить этот текст: он переведётся при следующей проверке
+    const tr = it.out.join(' ').replace(/\s+/g, ' ').trim();
+    if (!tr || tr === it.core) { TR.map.set(n, { o: it.raw, t: it.raw }); return; }
+    const t = it.lead + tr + it.trail;
+    TR.map.set(n, { o: it.raw, t });
+    n.data = t;
+  }
+
+  // Один проход: находит ещё не переведённый текст, переводит и подставляет по мере готовности
+  async function trScan(first) {
+    const gen = TR.gen;
+    const stat = { done: 0, fail: 0, ru: false };
+    const units = [];
+    for (const n of trNodes()) {
+      const raw = n.data;
+      const m = /^(\s*)([\s\S]*?)(\s*)$/.exec(raw);
+      let core = m[2].replace(/\s+/g, ' ');
+      if (core.toWellFormed) core = core.toWellFormed();
+      const it = { n, raw, core, lead: m[1], trail: m[3], out: [], left: 0 };
+      const ps = trPieces(core);
+      it.left = ps.length;
+      ps.forEach((p, k) => units.push({ it, k, text: p }));
+    }
+    const batches = [];
+    let cur = [], len = 0;
+    for (const u of units) {
+      const l = encodeURIComponent(u.text).length + 3;
+      if (cur.length && len + l > TR_BATCH) { batches.push(cur); cur = []; len = 0; }
+      cur.push(u); len += l;
+    }
+    if (cur.length) batches.push(cur);
+    if (!batches.length) return stat;
+
+    const run = async b => {
+      try {
+        const out = await trBatch(b);
+        if (gen !== TR.gen) return;
+        b.forEach((u, i) => {
+          u.it.out[u.k] = out[i] || '';
+          if (--u.it.left === 0) { trApply(u.it); stat.done++; }
+        });
+      } catch (e) { stat.fail++; }
+    };
+    await run(batches[0]);
+    if (first && TR.src === 'ru') { stat.ru = true; trRevert(); return stat; }
+    if (first && stat.fail && !stat.done) { TR.failUntil = performance.now() + 15000; return stat; }
+    let bi = 1;
+    const worker = async () => { while (bi < batches.length && stat.fail < 3 && gen === TR.gen) await run(batches[bi++]); };
+    await Promise.all(Array.from({ length: TR_PAR }, worker));
+    if (stat.fail) TR.failUntil = performance.now() + 15000;   // не долбим сервис, если он не отвечает
+    return stat;
+  }
+
+  function trRevert() {
+    for (const [n, e] of TR.map) { try { if (n.data === e.t) n.data = e.o; } catch (x) {} }
+    TR.map.clear();
+  }
+
+  // Новый текст на странице (подгрузка, SPA) и прокрутка: доводим перевод до конца
+  function trLater() {
+    if (!TR.on || TR.timer) return;
+    TR.timer = setTimeout(async () => {
+      TR.timer = 0;
+      if (!TR.on) return;
+      if (TR.busy || S.state !== 'idle' || performance.now() < TR.failUntil) { trLater(); return; }   // во время озвучки текст не трогаем
+      TR.busy = true;
+      try { await trScan(false); } catch (e) {}
+      TR.busy = false;
+    }, 900);
+  }
+
+  function trWatch(on) {
+    if (TR.obs) { TR.obs.disconnect(); TR.obs = null; }
+    window.removeEventListener('scroll', trLater, true);
+    if (!on || !document.body) return;
+    TR.obs = new MutationObserver(ms => {
+      for (const m of ms) {
+        if (m.type === 'characterData') {
+          const e = TR.map.get(m.target);
+          if (e && m.target.data === e.t) continue;          // это наша же замена
+          trLater(); return;
+        }
+        if (m.addedNodes.length) { trLater(); return; }
+      }
+    });
+    TR.obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    window.addEventListener('scroll', trLater, { passive: true, capture: true });
+  }
+
+  async function trStart(manual) {
+    if (!IS_TOP || TR.on || TR.busy || !document.body) return;
+    TR.busy = true;
+    TR.src = null;
+    stopReading();                                            // озвучка держит старый текст страницы
+    if (manual) toast('🌐 Перевожу…', 1500);
+    let st;
+    try { st = await trScan(true); } catch (e) { st = { done: 0, fail: 1, ru: false }; }
+    TR.busy = false;
+    if (st.ru) {
+      TR.need = false; TR.lang = 'ru';
+      if (manual) toast('Страница уже на русском', 2000);
+      buildMenu();
+      return;
+    }
+    if (!st.done) {
+      if (manual) toast(st.fail ? 'Не удалось перевести: нет ответа от Google Переводчика' : 'Нечего переводить', 2600);
+      return;
+    }
+    TR.on = true;
+    trWatch(true);
+    buildMenu();
+    toast('Переведено на русский', 1500);
+  }
+
+  function trRestore() {
+    TR.gen++;
+    stopReading();
+    trWatch(false);
+    clearTimeout(TR.timer); TR.timer = 0;
+    trRevert();
+    TR.on = false; TR.src = null;
+    trCheck();
+    buildMenu();
+    toast('Показан оригинал', 1300);
+  }
+
   /* ---------- обновление ---------- */
 
   function cmpVersions(a, b) {
@@ -1445,6 +1725,21 @@
     };
     if (document.readyState === 'complete') run();
     else window.addEventListener('load', run, { once: true });
+  }
+
+  // Перевод на русский: язык страницы определяем после загрузки; у страниц, которые рисуются позже, проверяем ещё несколько раз
+  if (IS_TOP) {
+    let tries = 0;
+    const tick = () => {
+      if (TR.on || TR.busy) return;
+      const was = TR.need;
+      trCheck();
+      if (TR.need !== was) buildMenu();
+      if (TR.need && cfg.trAuto && !TR.auto) { TR.auto = true; trStart(false); }
+      if (TR.lang == null && ++tries < 5) setTimeout(tick, 2000);
+    };
+    if (document.readyState === 'complete') setTimeout(tick, 900);
+    else window.addEventListener('load', () => setTimeout(tick, 900), { once: true });
   }
 
   /* ---------- перехват событий ---------- */
