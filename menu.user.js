@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.10.0
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском
+// @version      1.11.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском; видео не запускается само (автозапуск, видео-анимации, YouTube) и не грузится, пока вы не нажали на плеер
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -73,7 +73,7 @@
 
   /* ---------- настройки (выключатели) ---------- */
 
-  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true, darkAuto: true, trAuto: false };
+  const DEF = { read: true, hlSentence: true, hlWord: true, scroll: true, tap: true, swipe: true, link: true, pad: true, media: true, tilt: true, darkAuto: true, trAuto: false, noVideo: true };
   const LABELS = {
     read: 'Озвучка',
     hlSentence: 'Подсветка предложения',
@@ -86,7 +86,8 @@
     media: 'Медиа-команды (наушники, шторка)',
     tilt: 'Читать поле: телефон вертикально',
     darkAuto: 'Тёмная тема сама на светлых сайтах',
-    trAuto: 'Переводить на русский сразу, если страница не на русском'
+    trAuto: 'Переводить на русский сразу, если страница не на русском',
+    noVideo: 'Видео не запускается само и не грузится (пока не нажмёте на плеер)'
   };
   const cfg = {};
   for (const k of Object.keys(DEF)) {
@@ -227,6 +228,89 @@
     if (dark) return;                                              // сайт и так тёмный
     try { GM_openInTab.darkTheme(true); toast('🌙 Тёмная тема', 1200); } catch (e) {}
   }
+
+  /* ---------- видео само не запускается и не грузится ---------- */
+
+  // Видео стартует только после вашего нажатия на плеер. Блокируются автозапуск, видео-анимации вместо GIF,
+  // предпросмотры в лентах и автопереход на следующий ролик (YouTube). Заодно у видео отключается предзагрузка,
+  // чтобы страница не тянула трафик на ролики, которые вы не включали. Работает и во фреймах (встроенный YouTube).
+  const NV_WINDOW = 1500;   // сколько мс после вашего нажатия на плеер вызов play() считается вашим
+  let nvGest = null;        // последнее ваше нажатие: { path, t }
+
+  (() => {
+    const W = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    let proto = null;
+    try { proto = W.HTMLMediaElement.prototype; } catch (e) {}
+    if (!proto || typeof proto.play !== 'function') return;
+
+    const mark = e => {
+      if (!e.isTrusted) return;
+      try { nvGest = { path: (e.composedPath ? e.composedPath() : [e.target]).slice(0, 16), t: performance.now() }; } catch (x) {}
+    };
+    ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown'].forEach(t => window.addEventListener(t, mark, { capture: true, passive: true }));
+
+    // Нажатие было на самом плеере (на видео или на его кнопках поверх него), а не на ссылке рядом
+    const fromUser = v => {
+      const g = nvGest;
+      if (!g || performance.now() - g.t > NV_WINDOW) return false;
+      let area = 0;
+      try { const r = v.getBoundingClientRect(); area = r.width * r.height; } catch (e) {}
+      let e = v;
+      for (let i = 0; e && i < 6; i++, e = e.parentElement) {
+        if (!g.path.includes(e)) continue;
+        if (e === v) return true;
+        try { const r = e.getBoundingClientRect(); return r.width * r.height <= area * 2 + 1; } catch (x) { return false; }
+      }
+      return false;
+    };
+    const isVideo = v => { try { return v instanceof W.HTMLVideoElement; } catch (e) { return false; } };
+
+    const orig = proto.play;
+    proto.play = function play() {
+      if (cfg.noVideo && isVideo(this) && !fromUser(this)) {
+        return W.Promise.reject(new W.DOMException('Автозапуск видео отключён скриптом menu', 'NotAllowedError'));
+      }
+      return orig.apply(this, arguments);
+    };
+
+    // Запуск в обход play() (атрибут autoplay): ловим событие и сразу ставим на паузу
+    window.addEventListener('play', e => {
+      const v = e.target;
+      if (cfg.noVideo && isVideo(v) && !fromUser(v)) { try { v.pause(); } catch (x) {} }
+    }, true);
+
+    // Без автозапуска и без предзагрузки: ролик не качается, пока его не включили
+    const calm = v => {
+      try {
+        if (!cfg.noVideo) return;
+        if (v.hasAttribute('autoplay')) v.removeAttribute('autoplay');
+        if (v.paused && v.preload !== 'none') v.preload = 'none';
+      } catch (e) {}
+    };
+    const scan = n => {
+      if (!n || n.nodeType !== 1) return;
+      if (n.tagName === 'VIDEO') calm(n);
+      else if (n.querySelectorAll) n.querySelectorAll('video').forEach(calm);
+    };
+    try {
+      new MutationObserver(ms => {
+        for (const m of ms) {
+          if (m.type === 'attributes') scan(m.target);
+          else m.addedNodes.forEach(scan);
+        }
+      }).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['autoplay', 'preload'] });
+    } catch (e) {}
+
+    // Видео, созданное скриптом сайта (так делает YouTube), получает preload=none ещё до задания адреса
+    try {
+      const ce = W.Document.prototype.createElement;
+      W.Document.prototype.createElement = function createElement() {
+        const el = ce.apply(this, arguments);
+        try { if (cfg.noVideo && el && el.tagName === 'VIDEO') el.preload = 'none'; } catch (x) {}
+        return el;
+      };
+    } catch (e) {}
+  })();
 
   /* ---------- состояние ---------- */
 
