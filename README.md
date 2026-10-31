@@ -3,6 +3,7 @@
 <!-- AUTO-INSTALL-LINKS:START -->
 - [Прятать панели при прокрутке](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/hide-panels.user.js)
 - [menu](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/menu.user.js)
+- [scripts-test](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/scripts-test.user.js)
 - [SUBVOICE](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js)
 - [Phantom Opera](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/te_phantom_opera.user.js)
 - [translate-test](https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/translate-test.user.js)
