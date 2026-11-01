@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.2
+// @version 11.3
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -9,6 +9,7 @@
 // @grant GM_setValue
 // @grant GM_getValue
 // @grant GM_registerMenuCommand
+// @grant GM_unregisterMenuCommand
 // @grant GM_setClipboard
 // @grant GM_openInTab
 // @grant GM_xmlhttpRequest
@@ -52,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.2';
+  const VERSION = '11.3';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -801,65 +802,44 @@
     return n;
   }
 
+  // Меню настроек в том же стиле, что у скрипта «меню»: ✅ / ⬜ перед названием, меню не закрывается
+  // после нажатия, а пункты тут же перерисовываются.
+  let menuIds = [];
   function registerMenuCommands() {
-    GM_registerMenuCommand('🔍 Диагностика DOM', runDiagnostics);
-
-    GM_registerMenuCommand(`🔊 Скорость речи: ${CFG.rate.toFixed(2)}×`, () => {
-      const val = promptFloat('Скорость речи (0.5–2.0):', CFG.rate, 0.5, 2.0);
-      if (val === null) return; CFG.rate = val; saveCFG(CFG); alert(`✓ Скорость: ${CFG.rate.toFixed(2)}×`);
+    menuIds.forEach(id => { try { GM_unregisterMenuCommand(id); } catch {} });
+    menuIds = [];
+    const add = (label, fn, keepOpen = true) => {
+      try { menuIds.push(GM_registerMenuCommand(label, fn, keepOpen ? { autoClose: false } : undefined)); }
+      catch { menuIds.push(GM_registerMenuCommand(label, fn)); }
+    };
+    const flag = (key, label, after) => add((CFG[key] ? '✅ ' : '⬜ ') + label, () => {
+      CFG[key] = !CFG[key]; saveCFG(CFG);
+      try { after && after(CFG[key]); } catch {}
+      registerMenuCommands();
     });
 
-    GM_registerMenuCommand(`📱 Жесты наклона: ${CFG.tiltEnabled ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.tiltEnabled = !CFG.tiltEnabled; saveCFG(CFG);
-      if (!CFG.tiltEnabled && enabled) disableTilt();
-      else if (CFG.tiltEnabled && enabled) enableTilt();
-      alert(`Жесты наклона: ${CFG.tiltEnabled ? 'включены' : 'выключены'}`);
-    });
+    flag('shareOnTap', 'Поделиться по тапу');
+    flag('shareMenu', 'Системное «Поделиться» через 1,5 с');
+    flag('translate', 'Перевод названий на русский', on => { if (on) scanTitles(); });
+    flag('media', 'Медиакоманды (гарнитура, шторка)', on => { if (enabled) { if (on) mediaStart(); else mediaStop(); } });
+    flag('gamepad', 'Геймпад: A пауза · B стоп · X повтор · LB/RB, ↑/↓ — пред./след. · ←/→ скорость');
+    flag('hideBar', 'Скрывать нижнюю панель', on => { if (!on) document.documentElement.classList.remove('ytt-hide'); });
+    flag('flipBottom', 'Переворот вверх ногами → конец ленты');
+    flag('tiltEnabled', 'Жесты наклона', on => { if (!on && enabled) disableTilt(); else if (on && enabled) enableTilt(); });
 
-    GM_registerMenuCommand(`📐 Чувствительность: ${CFG.tiltThreshold}°`, () => {
+    add(`📐 Чувствительность наклона: ${CFG.tiltThreshold}°`, () => {
       const val = promptFloat('Порог наклона (15–70)°:', CFG.tiltThreshold, 15, 70);
-      if (val === null) return; CFG.tiltThreshold = val; saveCFG(CFG); alert(`✓ ${CFG.tiltThreshold}°`);
-    });
+      if (val !== null) { CFG.tiltThreshold = val; saveCFG(CFG); }
+      registerMenuCommands();
+    }, false);
+    add(`🔊 Скорость речи: ${CFG.rate.toFixed(2)}×`, () => {
+      const val = promptFloat('Скорость речи (0.5–2.0):', CFG.rate, 0.5, 2.0);
+      if (val !== null) { CFG.rate = val; saveCFG(CFG); }
+      registerMenuCommands();
+    }, false);
 
-    GM_registerMenuCommand(`📤 Поделиться по тапу: ${CFG.shareOnTap ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.shareOnTap = !CFG.shareOnTap; saveCFG(CFG);
-      alert(`Поделиться по тапу: ${CFG.shareOnTap ? 'включено' : 'выключено'}`);
-    });
-
-    GM_registerMenuCommand(`🔗 Системное «Поделиться» через 1,5 с: ${CFG.shareMenu ? 'ВКЛ ✓' : 'ВЫКЛ (только первое меню)'}`, () => {
-      CFG.shareMenu = !CFG.shareMenu; saveCFG(CFG);
-      alert(`Системное «Поделиться»: ${CFG.shareMenu ? 'включено (через 1,5 с)' : 'выключено — меню остаётся, пока не выберешь пункт или не тапнешь мимо'}`);
-    });
-
-    GM_registerMenuCommand(`🙃 Переворот вверх ногами → конец ленты: ${CFG.flipBottom ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.flipBottom = !CFG.flipBottom; saveCFG(CFG);
-      alert(`Переворот → конец ленты: ${CFG.flipBottom ? 'включён' : 'выключен'}`);
-    });
-
-    GM_registerMenuCommand(`⬇️ Скрывать нижнюю панель: ${CFG.hideBar ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.hideBar = !CFG.hideBar; saveCFG(CFG);
-      if (!CFG.hideBar) document.documentElement.classList.remove('ytt-hide');
-      alert(`Скрытие нижней панели: ${CFG.hideBar ? 'включено' : 'выключено'}`);
-    });
-
-    GM_registerMenuCommand(`🌐 Перевод названий на русский: ${CFG.translate ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.translate = !CFG.translate; saveCFG(CFG);
-      if (CFG.translate) scanTitles();
-      alert(`Перевод названий: ${CFG.translate ? 'включён' : 'выключен (уже переведённые останутся до обновления страницы)'}`);
-    });
-
-    GM_registerMenuCommand(`🎧 Медиакоманды (гарнитура, шторка): ${CFG.media ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.media = !CFG.media; saveCFG(CFG);
-      if (enabled) { if (CFG.media) mediaStart(); else mediaStop(); }
-      alert(`Медиакоманды: ${CFG.media ? 'включены' : 'выключены'}`);
-    });
-
-    GM_registerMenuCommand(`🎮 Геймпад: ${CFG.gamepad ? 'ВКЛ ✓' : 'ВЫКЛ'}`, () => {
-      CFG.gamepad = !CFG.gamepad; saveCFG(CFG);
-      alert(`Геймпад: ${CFG.gamepad ? 'включён' : 'выключен'}\nA — пауза/продолжить · B — стоп · X — повторить\nLB/RB, ↑/↓ — пред./след. · ←/→ — скорость`);
-    });
-
-    GM_registerMenuCommand('🔄 Проверить обновление', async () => {
+    add('🔍 Диагностика DOM', runDiagnostics, false);
+    add('🔄 Проверить обновление', async () => {
       try {
         const url = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js';
         const res = await fetch(url + '?t=' + Date.now());
@@ -869,12 +849,12 @@
         if (remote === local) alert(`✓ Актуальная версия ${local}`);
         else if (confirm(`Доступна v${remote} (текущая: ${local}). Открыть?`)) window.open(url, '_blank');
       } catch (err) { alert('⚠️ Ошибка: ' + err.message); }
-    });
-
-    GM_registerMenuCommand('♻️ Сбросить настройки', () => {
+    }, false);
+    add('♻️ Сбросить настройки', () => {
       if (!confirm('Сбросить все настройки?')) return;
       CFG = { ...DEFAULTS }; saveCFG(CFG); alert('✓ Сброшено. Обновите страницу.');
-    });
+      registerMenuCommands();
+    }, false);
   }
 
   // ── Share-on-tap ───────────────────────────────────────────────────────────
@@ -907,10 +887,26 @@
     window.open(url, '_blank');
   }
   // Прямая отправка в приложение через intent: (браузеры Android: Chrome/Kiwi и браузер универсального приложения)
+  let intentAt = 0;
   function launchIntent(u) {
+    intentAt = Date.now();
     const a = Object.assign(document.createElement('a'), { href: u });
-    a.style.display = 'none'; document.body.appendChild(a); a.click(); a.remove();
+    a.style.display = 'none'; document.body.appendChild(a);
+    // Клик по такой ссылке перехватывает навигация самого YouTube (SPA): она пытается «открыть» intent:
+    // как страницу и стирает основной контент, оставляя только панели. Гасим событие на window
+    // раньше всех слушателей страницы; действие по умолчанию (запуск приложения) остаётся.
+    const stop = e => { if (e.target === a) e.stopImmediatePropagation(); };
+    window.addEventListener('click', stop, true);
+    try { a.click(); } finally { window.removeEventListener('click', stop, true); a.remove(); }
   }
+  // Страховка: вернулись из приложения, а карточек в ленте нет — перезагружаем страницу
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !intentAt || Date.now() - intentAt > 10 * 60 * 1000) return;
+    setTimeout(() => {
+      if (/^\/(watch|shorts)\b/.test(location.pathname)) return;
+      if (!document.querySelector(CARD_SELECTORS.join(','))) location.reload();
+    }, 2000);
+  });
   const sendIntent = (url, pkg) => 'intent:#Intent;action=android.intent.action.SEND;type=text/plain;' +
     (pkg ? 'package=' + pkg + ';' : '') + 'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';end';
   const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;package=' + pkg + ';action=android.intent.action.VIEW;end';
