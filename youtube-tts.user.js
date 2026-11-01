@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.3
+// @version 11.4
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.3';
+  const VERSION = '11.4';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -868,10 +868,11 @@
     return null;
   }
 
-  // По тапу: сразу появляются два полупрозрачных пункта:
+  // По тапу: сразу появляются полупрозрачные пункты:
   //   «↗ Вкладка» — новая вкладка с переходом в неё (не в фоне);
   //   «📝 SUBVOICE · фон» — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
-  //   «⬇ SnapTube» и «▶ NewPipe» — прямая отправка ссылки в приложение.
+  //   «⬇ Отправить в…» — системный выбор из установленных приложений, принимающих ссылку (SnapTube и др.);
+  //   «▶ Открыть в…» — системный выбор из приложений, открывающих ссылки YouTube (NewPipe и др.).
   // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
   // Если выключена настройка shareMenu — остаётся только это первое меню: без таймера,
   // закрывается выбором пункта или тапом мимо.
@@ -909,7 +910,7 @@
   });
   const sendIntent = (url, pkg) => 'intent:#Intent;action=android.intent.action.SEND;type=text/plain;' +
     (pkg ? 'package=' + pkg + ';' : '') + 'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';end';
-  const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;package=' + pkg + ';action=android.intent.action.VIEW;end';
+  const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;' + (pkg ? 'package=' + pkg + ';' : '') + 'action=android.intent.action.VIEW;end';
   async function doShare(url, title) {
     if (navigator.share) {
       try { await navigator.share({ title: title || 'YouTube', url }); }
@@ -944,8 +945,8 @@
     pop.append(
       mk('↗ Вкладка', () => openTab(tabUrl, true)),
       mk('📝 SUBVOICE · фон', () => openTab(svUrl, false)),
-      mk('⬇ SnapTube', () => launchIntent(sendIntent(url, 'com.snaptube.premium'))),
-      mk('▶ NewPipe', () => launchIntent(viewIntent(info.id, 'org.schabi.newpipe')))
+      mk('⬇ Отправить в…', () => launchIntent(sendIntent(url))),
+      mk('▶ Открыть в…', () => launchIntent(viewIntent(info.id)))
     );
     document.body.appendChild(pop);
     if (CFG.shareMenu) {
