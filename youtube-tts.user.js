@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.4
+// @version 11.5
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.4';
+  const VERSION = '11.5';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -868,11 +868,14 @@
     return null;
   }
 
-  // По тапу: сразу появляются полупрозрачные пункты:
-  //   «↗ Вкладка» — новая вкладка с переходом в неё (не в фоне);
-  //   «📝 SUBVOICE · фон» — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
-  //   «⬇ Отправить в…» — системный выбор из установленных приложений, принимающих ссылку (SnapTube и др.);
-  //   «▶ Открыть в…» — системный выбор из приложений, открывающих ссылки YouTube (NewPipe и др.).
+  // По тапу: сразу появляется ряд полупрозрачных кружков-значков (без текста):
+  //   ↗ — новая вкладка с переходом в неё (не в фоне);
+  //   📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
+  //   📤 — системный выбор любого приложения из установленных;
+  //   два последних кружка — «слоты»: запоминают приложение и открывают его сразу.
+  //     Пустой слот (＋) по тапу показывает ряд значков приложений — выбор запоминается и ссылка сразу уходит туда;
+  //     удержание слота — выбрать другое приложение. Страница не может узнать, что вы выбрали в системном списке,
+  //     поэтому слот привязывается к приложению по имени пакета (✎ — ввести своё).
   // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
   // Если выключена настройка shareMenu — остаётся только это первое меню: без таймера,
   // закрывается выбором пункта или тапом мимо.
@@ -922,6 +925,49 @@
     try { launchIntent(sendIntent(url)); return; } catch {}
     try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
   }
+  // Значки приложений для слотов: глиф и цвета кружка
+  const APPS = [
+    { pkg: 'com.snaptube.premium',       g: '⬇',  c: ['#29b6f6', '#1565c0'] },
+    { pkg: 'org.schabi.newpipe',         g: '▶',  c: ['#ef5350', '#b71c1c'] },
+    { pkg: 'com.google.android.youtube', g: '📺', c: ['#ff5252', '#c62828'] },
+    { pkg: 'com.deniscerri.ytdl',        g: '⤓',  c: ['#66bb6a', '#2e7d32'] },
+    { pkg: 'com.junkfood.seal',          g: '🦭', c: ['#4dd0e1', '#00838f'] },
+    { pkg: 'org.telegram.messenger',     g: '✈',  c: ['#4fc3f7', '#0277bd'] },
+  ];
+  const appInfo = pkg => APPS.find(a => a.pkg === pkg) ||
+    { pkg, g: (pkg.split('.').pop() || '?').charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
+  const SLOTS = ['slotApp1', 'slotApp2'];
+  const getSlot = k => { try { return GM_getValue(k, '') || ''; } catch { return ''; } };
+  const setSlot = (k, v) => { try { GM_setValue(k, v); } catch {} };
+
+  // Круглая кнопка-значок; onHold — необязательное удержание (0,55 с)
+  function mkCircle(glyph, colors, onTap, onHold, dashed) {
+    const b = document.createElement('button');
+    b.textContent = glyph;
+    Object.assign(b.style, {
+      width: '54px', height: '54px', borderRadius: '50%', padding: '0', fontSize: '24px', lineHeight: '1',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+      border: dashed ? '2px dashed rgba(255,255,255,0.65)' : '1.5px solid rgba(255,255,255,0.45)',
+      background: colors ? `linear-gradient(145deg, ${colors[0]}d9, ${colors[1]}d9)` : 'rgba(0,0,0,0.3)',
+      boxShadow: '0 4px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)',
+      backdropFilter: 'blur(4px)', webkitBackdropFilter: 'blur(4px)',
+      textShadow: '0 1px 3px rgba(0,0,0,0.6)', touchAction: 'manipulation',
+      WebkitTouchCallout: 'none', userSelect: 'none', WebkitTapHighlightColor: 'transparent',
+    });
+    let hold = null, held = false;
+    const cancel = () => { clearTimeout(hold); hold = null; };
+    if (onHold) {
+      b.addEventListener('pointerdown', () => {
+        held = false;
+        hold = setTimeout(() => { hold = null; held = true; navigator.vibrate && navigator.vibrate(40); onHold(); }, 550);
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => b.addEventListener(ev, cancel));
+    }
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('click', e => { e.stopPropagation(); if (held) { held = false; return; } onTap(); });
+    return b;
+  }
+
   function openShare(info, title) {
     closePop();
     const url = `https://youtu.be/${info.id}`;
@@ -930,32 +976,47 @@
     pop = document.createElement('div');
     Object.assign(pop.style, {
       position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
-      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '8px', zIndex: '2147483647', width: '92vw',
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '12px', zIndex: '2147483647', width: '92vw',
     });
-    const mk = (label, fn) => {
-      const b = Object.assign(document.createElement('button'), { textContent: label });
-      Object.assign(b.style, {
-        padding: '10px 16px', border: '1px solid rgba(255,255,255,0.4)', borderRadius: '999px',
-        background: 'rgba(0,0,0,0.22)', backdropFilter: 'blur(3px)', webkitBackdropFilter: 'blur(3px)',
-        color: '#fff', fontSize: '14px', textShadow: '0 1px 3px rgba(0,0,0,0.9)', whiteSpace: 'nowrap',
-      });
-      b.addEventListener('click', e => { e.stopPropagation(); closePop(); fn(); });
-      return b;
-    };
-    pop.append(
-      mk('↗ Вкладка', () => openTab(tabUrl, true)),
-      mk('📝 SUBVOICE · фон', () => openTab(svUrl, false)),
-      mk('⬇ Отправить в…', () => launchIntent(sendIntent(url))),
-      mk('▶ Открыть в…', () => launchIntent(viewIntent(info.id)))
-    );
-    document.body.appendChild(pop);
-    if (CFG.shareMenu) {
-      popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
-    } else {
-      // Режим «только первое меню»: без таймера, закрывается тапом мимо
+    // Закрытие тапом мимо (в режиме без таймера и при выборе приложения для слота)
+    const armOutside = () => {
+      if (popOutside) return;
       popOutside = e => { if (pop && !pop.contains(e.target)) closePop(); };
-      setTimeout(() => { if (pop) document.addEventListener('pointerdown', popOutside, true); }, 0);
-    }
+      setTimeout(() => { if (pop && popOutside) document.addEventListener('pointerdown', popOutside, true); }, 0);
+    };
+    const run = fn => () => { closePop(); fn(); };
+    const send = pkg => launchIntent(sendIntent(url, pkg));
+
+    // Выбор приложения для слота: ряд значков; ✎ — ввести имя пакета, 🚫 — очистить слот
+    const renderPicker = (k, launch) => {
+      clearTimeout(popTimer); popTimer = null; armOutside();
+      pop.textContent = '';
+      const choose = pkg => { setSlot(k, pkg); closePop(); if (launch) send(pkg); else showToast('✓ Сохранено', 1200); };
+      APPS.forEach(a => pop.append(mkCircle(a.g, a.c, () => choose(a.pkg))));
+      pop.append(mkCircle('✎', ['#b0bec5', '#37474f'], () => {
+        const v = (prompt('Имя пакета приложения, например com.snaptube.premium', getSlot(k)) || '').trim();
+        if (/^[a-zA-Z]\w*(\.\w+)+$/.test(v)) choose(v); else if (v) showToast('Неверное имя пакета', 1800);
+      }));
+      if (getSlot(k)) pop.append(mkCircle('🚫', ['#757575', '#212121'], () => { setSlot(k, ''); closePop(); }));
+    };
+    const renderMain = () => {
+      pop.textContent = '';
+      pop.append(
+        mkCircle('↗', ['#90a4ae', '#455a64'], run(() => openTab(tabUrl, true))),
+        mkCircle('📝', ['#ba68c8', '#6a1b9a'], run(() => openTab(svUrl, false))),
+        mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),
+        ...SLOTS.map(k => {
+          const pkg = getSlot(k);
+          if (!pkg) return mkCircle('＋', null, () => renderPicker(k, true), () => renderPicker(k, false), true);
+          const a = appInfo(pkg);
+          return mkCircle(a.g, a.c, run(() => send(pkg)), () => renderPicker(k, false));
+        })
+      );
+    };
+    renderMain();
+    document.body.appendChild(pop);
+    if (CFG.shareMenu) popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
+    else armOutside();   // режим «только первое меню»: без таймера, закрывается тапом мимо
   }
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
