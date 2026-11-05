@@ -674,13 +674,13 @@
       synth.speak(Object.assign(new SpeechSynthesisUtterance(' '), { volume: 0 }));
       paused = false;
       showNavBtns(true);
-      if (CFG.tiltEnabled) enableTilt();
+      if (CFG.tiltEc.abled) enableTilt();
       mediaStart();
       waitForCards(() => goTo(findCenterIndex()));
     } else {
       speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD();
       synth.cancel(); showNavBtns(false); disableTilt();
-      updatePlayBtn('r_off'); lastSpokenEl = null; paused = false;
-      mediaStart();
+      updatePlayBtn('off'); lastSpokenEl = null; paused = false;
+      mediaStop();
     }
   }
