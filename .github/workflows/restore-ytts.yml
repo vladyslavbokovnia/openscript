@@ -1,0 +1,58 @@
+name: Restore YouTube TTS script
+# Разовая починка: берёт исходный youtube-tts.user.js (11.5) из истории, добавляет кнопку 🎧 (11.6)
+# и проверяет хеш результата. После срабатывания файл можно удалить.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/restore-ytts.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restore and patch
+        run: |
+          set -e
+          ORIG=b836f5fd06dcd564f2770a92eb31918073971490
+          WANT=44040d687fec3e0e0b5b9006b7116513e25557be
+          git show "$ORIG:youtube-tts.user.js" > /tmp/ytts.js
+          cat > /tmp/apply_edit.py <<'PYEOF'
+          import sys
+          p = sys.argv[1]
+          s = open(p, encoding='utf-8').read()
+
+          def rep(old, new):
+              global s
+              assert s.count(old) == 1, (old[:50], s.count(old))
+              s = s.replace(old, new)
+
+          rep("// @version 11.5\n", "// @version 11.6\n")
+          rep("const VERSION = '11.5';", "const VERSION = '11.6';")
+          rep("  const viewIntent = (id, pkg)",
+              "  // 🎧: ссылка и название уходят в Universal-application (модуль «YouTube аудио»): он скачает русскую дорожку и превью\n"
+              "  const audioIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +\n"
+              "    'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';\n"
+              "  const viewIntent = (id, pkg)")
+          rep("        mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),\n",
+              "        mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),\n"
+              "        mkCircle('🎧', ['#4db6ac', '#00695c'], run(() => launchIntent(audioIntent(url, title)))),\n")
+          open(p, 'w', encoding='utf-8').write(s)
+          PYEOF
+          python3 /tmp/apply_edit.py /tmp/ytts.js
+          GOT=$(git hash-object /tmp/ytts.js)
+          echo "hash: $GOT (want $WANT)"
+          test "$GOT" = "$WANT"
+          cp /tmp/ytts.js youtube-tts.user.js
+          git rm -q --ignore-unmatch youtube-tts.pass
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add youtube-tts.user.js
+          git commit -m "YouTube TTS 11.6: восстановлен из 11.5 + кнопка 🎧 (скачать русскую дорожку)"
+          git push
