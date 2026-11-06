@@ -430,8 +430,7 @@
   function pauseTTS() {
     if (!enabled || paused) return;
     paused = true; speakGen++;
-    clearTimeout(autoTimer); autoTimer = null; clearWD();
-    synth.cancel();
+    clearTimeout(autoTimer); autoTimer = null; clearWD(); synth.cancel();
     updatePlayBtn('paused'); mediaState('paused');
   }
   function resumeTTS() {
@@ -674,7 +673,7 @@
       synth.speak(Object.assign(new SpeechSynthesisUtterance(' '), { volume: 0 }));
       paused = false;
       showNavBtns(true);
-      if (CFG.tiltEc.abled) enableTilt();
+      if (CFG.tiltEnabled) enableTilt();
       mediaStart();
       waitForCards(() => goTo(findCenterIndex()));
     } else {
@@ -684,3 +683,451 @@
       mediaStop();
     }
   }
+
+  // ── Диагностика ────────────────────────────────────────────────────────────
+  function runDiagnostics() {
+    const lines = ['=== YouTube TTS Диагностика v' + VERSION + ' ===', ''];
+
+    lines.push('--- Карточки ---');
+    let bestSel = null;
+    for (const sel of CARD_SELECTORS) {
+      const n = document.querySelectorAll(sel).length;
+      lines.push(`${sel}: ${n}`);
+      if (n > 0 && !bestSel) bestSel = sel;
+    }
+    lines.push('');
+
+    lines.push('--- Все yt* теги на странице ---');
+    const tagCounts = {};
+    document.querySelectorAll('*').forEach(el => {
+      const tag = el.tagName.toLowerCase();
+      if (tag.startsWith('ytm-') || tag.startsWith('ytd-') || tag.startsWith('yt-'))
+        tagCounts[tag] = (tagCounts[tag] || 0) + 1;
+    });
+    Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 25)
+      .forEach(([tag, n]) => lines.push(`  ${tag}: ${n}`));
+    lines.push('');
+
+    if (bestSel) {
+      const cards = findCards();
+      lines.push(`Всего карточек: ${cards.length}`);
+
+      // Найти текущую карточку (по центру экрана)
+      const ci = findCenterIndex();
+      const card = cards[ci];
+      lines.push(`Текущий индекс: ${ci}`);
+      lines.push(`Skippable: ${isSkippable(card)}`);
+      lines.push(`Совпадает с lastSpokenEl: ${card === lastSpokenEl}`);
+      lines.push('');
+      lines.push(`--- Содержимое карточки [${ci}] ---`);
+      [...card.querySelectorAll('h3,h4,span,a,p')]
+        .map(el => el.textContent?.trim()).filter(t => t && t.length > 5 && t.length < 120)
+        .slice(0, 10).forEach(t => lines.push('  ' + t.slice(0, 80)));
+      lines.push('');
+      const { title, date } = extractInfo(card);
+      lines.push(`Заголовок: "${title || 'НЕ НАЙДЕН'}"`);
+      lines.push(`Дата: "${date || 'НЕ НАЙДЕНА'}"`);
+    } else {
+      lines.push('❌ Карточки не найдены.');
+      lines.push('Прокрутите ленту и попробуйте снова.');
+    }
+    lines.push('');
+
+    lines.push('--- TTS ---');
+    lines.push(`speechSynthesis: ${'speechSynthesis' in window ? 'есть' : 'НЕТ'}`);
+    const voices = synth.getVoices();
+    lines.push(`Голосов: ${voices.length}`);
+    voices.filter(v => v.lang.startsWith('ru')).slice(0, 3)
+      .forEach(v => lines.push(`  ${v.name} (${v.lang})`));
+    lines.push('');
+    lines.push(`URL: ${location.href.slice(0, 80)}`);
+    lines.push('Последнее: ' + (dbg || '—'));
+    lines.push('Скрипт: v' + VERSION);
+
+    showDiagDialog(lines.join('\n'));
+  }
+
+  function showDiagDialog(report) {
+    document.getElementById('yt-tts-diag')?.remove();
+    const overlay = document.createElement('div');
+    overlay.id = 'yt-tts-diag';
+    Object.assign(overlay.style, {
+      position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
+      background: 'rgba(0,0,0,0.85)', zIndex: '2147483647',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      padding: '16px', boxSizing: 'border-box',
+    });
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      background: '#1a1a1a', border: '1px solid #444', borderRadius: '16px', padding: '16px',
+      maxWidth: '500px', width: '100%', maxHeight: '80vh',
+      display: 'flex', flexDirection: 'column', gap: '12px',
+    });
+    const hdr = Object.assign(document.createElement('div'), { textContent: '🔍 Диагностика DOM' });
+    Object.assign(hdr.style, { color: '#fff', fontWeight: 'bold', fontSize: '16px' });
+    const pre = Object.assign(document.createElement('pre'), { textContent: report });
+    Object.assign(pre.style, {
+      color: '#aef', fontSize: '11px', lineHeight: '1.5', overflowY: 'auto', flex: '1',
+      margin: '0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'monospace',
+    });
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '8px' });
+
+    function mkBtn(label, bg, fn) {
+      const b = Object.assign(document.createElement('button'), { textContent: label });
+      Object.assign(b.style, { flex: '1', padding: '10px', borderRadius: '10px', border: 'none', background: bg, color: '#fff', fontSize: '14px', cursor: 'pointer', fontWeight: 'bold' });
+      b.addEventListener('click', fn); return b;
+    }
+    const copyBtn = mkBtn('📋 Скопировать', '#0066cc', () => {
+      try {
+        if (typeof GM_setClipboard !== 'undefined') GM_setClipboard(report);
+        else navigator.clipboard.writeText(report);
+        copyBtn.textContent = '✓ Скопировано!';
+        setTimeout(() => { copyBtn.textContent = '📋 Скопировать'; }, 2000);
+      } catch { copyBtn.textContent = '❌ Ошибка'; }
+    });
+    row.appendChild(copyBtn);
+    row.appendChild(mkBtn('✕ Закрыть', '#444', () => overlay.remove()));
+    box.append(hdr, pre, row);
+    overlay.appendChild(box);
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+
+  // ── Меню ──────────────────────────────────────────────────────────────────
+  function promptFloat(msg, cur, min, max) {
+    const val = prompt(msg, cur); if (val === null) return null;
+    const n = parseFloat(val);
+    if (isNaN(n) || n < min || n > max) { alert(`Введите от ${min} до ${max}`); return null; }
+    return n;
+  }
+
+  // Меню настроек в том же стиле, что у скрипта «меню»: ✅ / ⬜ перед названием, меню не закрывается
+  // после нажатия, а пункты тут же перерисовываются.
+  let menuIds = [];
+  function registerMenuCommands() {
+    menuIds.forEach(id => { try { GM_unregisterMenuCommand(id); } catch {} });
+    menuIds = [];
+    const add = (label, fn, keepOpen = true) => {
+      try { menuIds.push(GM_registerMenuCommand(label, fn, keepOpen ? { autoClose: false } : undefined)); }
+      catch { menuIds.push(GM_registerMenuCommand(label, fn)); }
+    };
+    const flag = (key, label, after) => add((CFG[key] ? '✅ ' : '⬜ ') + label, () => {
+      CFG[key] = !CFG[key]; saveCFG(CFG);
+      try { after && after(CFG[key]); } catch {}
+      registerMenuCommands();
+    });
+
+    flag('shareOnTap', 'Поделиться по тапу');
+    flag('shareMenu', 'Системное «Поделиться» через 1,5 с');
+    flag('translate', 'Перевод названий на русский', on => { if (on) scanTitles(); });
+    flag('media', 'Медиакоманды (гарнитура, шторка)', on => { if (enabled) { if (on) mediaStart(); else mediaStop(); } });
+    flag('gamepad', 'Геймпад: A пауза · B стоп · X повтор · LB/RB, ↑/↓ — пред./след. · ←/→ скорость');
+    flag('hideBar', 'Скрывать нижнюю панель', on => { if (!on) document.documentElement.classList.remove('ytt-hide'); });
+    flag('flipBottom', 'Переворот вверх ногами → конец ленты');
+    flag('tiltEnabled', 'Жесты наклона', on => { if (!on && enabled) disableTilt(); else if (on && enabled) enableTilt(); });
+
+    add(`📐 Чувствительность наклона: ${CFG.tiltThreshold}°`, () => {
+      const val = promptFloat('Порог наклона (15–70)°:', CFG.tiltThreshold, 15, 70);
+      if (val !== null) { CFG.tiltThreshold = val; saveCFG(CFG); }
+      registerMenuCommands();
+    }, false);
+    add(`🔊 Скорость речи: ${CFG.rate.toFixed(2)}×`, () => {
+      const val = promptFloat('Скорость речи (0.5–2.0):', CFG.rate, 0.5, 2.0);
+      if (val !== null) { CFG.rate = val; saveCFG(CFG); }
+      registerMenuCommands();
+    }, false);
+
+    add('🔍 Диагностика DOM', runDiagnostics, false);
+    add('🔄 Проверить обновление', async () => {
+      try {
+        const url = 'https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/youtube-tts.user.js';
+        const res = await fetch(url + '?t=' + Date.now());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const m = (await res.text()).match(/@version\s+([\d.]+)/);
+        const remote = m ? m[1] : '?', local = VERSION;
+        if (remote === local) alert(`✓ Актуальная версия ${local}`);
+        else if (confirm(`Доступна v${remote} (текущая: ${local}). Открыть?`)) window.open(url, '_blank');
+      } catch (err) { alert('⚠️ Ошибка: ' + err.message); }
+    }, false);
+    add('♻️ Сбросить настройки', () => {
+      if (!confirm('Сбросить все настройки?')) return;
+      CFG = { ...DEFAULTS }; saveCFG(CFG); alert('✓ Сброшено. Обновите страницу.');
+      registerMenuCommands();
+    }, false);
+  }
+
+  // ── Share-on-tap ───────────────────────────────────────────────────────────
+  function getVideoInfo(el) {
+    for (const a of [el, ...el.querySelectorAll('a[href]')]) {
+      const href = a.href || '';
+      let m = href.match(/[?&]v=([^&#]+)/); if (m) return { id: m[1], short: false };
+      m = href.match(/\/shorts\/([^/?#]+)/); if (m) return { id: m[1], short: true };
+      m = href.match(/youtu\.be\/([^?#]+)/); if (m) return { id: m[1], short: false };
+    }
+    return null;
+  }
+
+  // По тапу: сразу появляется ряд полупрозрачных кружков-значков (без текста):
+  //   ↗ — новая вкладка с переходом в неё (не в фоне);
+  //   📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
+  //   📤 — системный выбор любого приложения из установленных;
+  //   два последних кружка — «слоты»: запоминают приложение и открывают его сразу.
+  //     Пустой слот (＋) по тапу показывает ряд значков приложений — выбор запоминается и ссылка сразу уходит туда;
+  //     удержание слота — выбрать другое приложение. Страница не может узнать, что вы выбрали в системном списке,
+  //     поэтому слот привязывается к приложению по имени пакета (✎ — ввести своё).
+  // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
+  // Если выключена настройка shareMenu — остаётся только это первое меню: без таймера,
+  // закрывается выбором пункта или тапом мимо.
+  // Страница не знает про группы вкладок: новая вкладка встаёт в группу вкладки-источника — это решает браузер.
+  let pop = null, popTimer = null, popOutside = null;
+  function closePop() {
+    clearTimeout(popTimer); popTimer = null;
+    if (popOutside) { document.removeEventListener('pointerdown', popOutside, true); popOutside = null; }
+    pop && pop.remove(); pop = null;
+  }
+  function openTab(url, active) {
+    try { if (typeof GM_openInTab === 'function') { GM_openInTab(url, { active: !!active, insert: true, setParent: true }); showToast(active ? '↗ Открыто' : '↗ Открыто в фоне', 1500); return; } } catch {}
+    window.open(url, '_blank');
+  }
+  // Прямая отправка в приложение через intent: (браузеры Android: Chrome/Kiwi и браузер универсального приложения)
+  let intentAt = 0;
+  function launchIntent(u) {
+    intentAt = Date.now();
+    const a = Object.assign(document.createElement('a'), { href: u });
+    a.style.display = 'none'; document.body.appendChild(a);
+    // Клик по такой ссылке перехватывает навигация самого YouTube (SPA): она пытается «открыть» intent:
+    // как страницу и стирает основной контент, оставляя только панели. Гасим событие на window
+    // раньше всех слушателей страницы; действие по умолчанию (запуск приложения) остаётся.
+    const stop = e => { if (e.target === a) e.stopImmediatePropagation(); };
+    window.addEventListener('click', stop, true);
+    try { a.click(); } finally { window.removeEventListener('click', stop, true); a.remove(); }
+  }
+  // Страховка: вернулись из приложения, а карточек в ленте нет — перезагружаем страницу
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !intentAt || Date.now() - intentAt > 10 * 60 * 1000) return;
+    setTimeout(() => {
+      if (/^\/(watch|shorts)\b/.test(location.pathname)) return;
+      if (!document.querySelector(CARD_SELECTORS.join(','))) location.reload();
+    }, 2000);
+  });
+  const sendIntent = (url, pkg) => 'intent:#Intent;action=android.intent.action.SEND;type=text/plain;' +
+    (pkg ? 'package=' + pkg + ';' : '') + 'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';end';
+  // 🎧: ссылка и название уходят в Universal-application (модуль «YouTube аудио»): он скачает русскую дорожку и превью
+  const audioIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
+    'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
+  const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;' + (pkg ? 'package=' + pkg + ';' : '') + 'action=android.intent.action.VIEW;end';
+  async function doShare(url, title) {
+    if (navigator.share) {
+      try { await navigator.share({ title: title || 'YouTube', url }); }
+      catch (e) { if (!e || e.name !== 'AbortError') { try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); } } }
+      return;
+    }
+    // Нет navigator.share (WebView): системное меню «Поделиться» через intent, ссылка заодно копируется
+    try { if (typeof GM_setClipboard === 'function') GM_setClipboard(url); } catch {}
+    try { launchIntent(sendIntent(url)); return; } catch {}
+    try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
+  }
+  // Значки приложений для слотов: глиф и цвета кружка
+  const APPS = [
+    { pkg: 'com.snaptube.premium',       g: '⬇',  c: ['#29b6f6', '#1565c0'] },
+    { pkg: 'org.schabi.newpipe',         g: '▶',  c: ['#ef5350', '#b71c1c'] },
+    { pkg: 'com.google.android.youtube', g: '📺', c: ['#ff5252', '#c62828'] },
+    { pkg: 'com.deniscerri.ytdl',        g: '⤓',  c: ['#66bb6a', '#2e7d32'] },
+    { pkg: 'com.junkfood.seal',          g: '🦭', c: ['#4dd0e1', '#00838f'] },
+    { pkg: 'org.telegram.messenger',     g: '✈',  c: ['#4fc3f7', '#0277bd'] },
+  ];
+  const appInfo = pkg => APPS.find(a => a.pkg === pkg) ||
+    { pkg, g: (pkg.split('.').pop() || '?').charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
+  const SLOTS = ['slotApp1', 'slotApp2'];
+  const getSlot = k => { try { return GM_getValue(k, '') || ''; } catch { return ''; } };
+  const setSlot = (k, v) => { try { GM_setValue(k, v); } catch {} };
+
+  // Круглая кнопка-значок; onHold — необязательное удержание (0,55 с)
+  function mkCircle(glyph, colors, onTap, onHold, dashed) {
+    const b = document.createElement('button');
+    b.textContent = glyph;
+    Object.assign(b.style, {
+      width: '54px', height: '54px', borderRadius: '50%', padding: '0', fontSize: '24px', lineHeight: '1',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff',
+      border: dashed ? '2px dashed rgba(255,255,255,0.65)' : '1.5px solid rgba(255,255,255,0.45)',
+      background: colors ? `linear-gradient(145deg, ${colors[0]}d9, ${colors[1]}d9)` : 'rgba(0,0,0,0.3)',
+      boxShadow: '0 4px 14px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.35)',
+      backdropFilter: 'blur(4px)', webkitBackdropFilter: 'blur(4px)',
+      textShadow: '0 1px 3px rgba(0,0,0,0.6)', touchAction: 'manipulation',
+      WebkitTouchCallout: 'none', userSelect: 'none', WebkitTapHighlightColor: 'transparent',
+    });
+    let hold = null, held = false;
+    const cancel = () => { clearTimeout(hold); hold = null; };
+    if (onHold) {
+      b.addEventListener('pointerdown', () => {
+        held = false;
+        hold = setTimeout(() => { hold = null; held = true; navigator.vibrate && navigator.vibrate(40); onHold(); }, 550);
+      });
+      ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => b.addEventListener(ev, cancel));
+    }
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('click', e => { e.stopPropagation(); if (held) { held = false; return; } onTap(); });
+    return b;
+  }
+
+  function openShare(info, title) {
+    closePop();
+    const url = `https://youtu.be/${info.id}`;
+    const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
+    const svUrl = 'https://example.com/#sv=' + encodeURIComponent(url);
+    pop = document.createElement('div');
+    Object.assign(pop.style, {
+      position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '12px', zIndex: '2147483647', width: '92vw',
+    });
+    // Закрытие тапом мимо (в режиме без таймера и при выборе приложения для слота)
+    const armOutside = () => {
+      if (popOutside) return;
+      popOutside = e => { if (pop && !pop.contains(e.target)) closePop(); };
+      setTimeout(() => { if (pop && popOutside) document.addEventListener('pointerdown', popOutside, true); }, 0);
+    };
+    const run = fn => () => { closePop(); fn(); };
+    const send = pkg => launchIntent(sendIntent(url, pkg));
+
+    // Выбор приложения для слота: ряд значков; ✎ — ввести имя пакета, 🚫 — очистить слот
+    const renderPicker = (k, launch) => {
+      clearTimeout(popTimer); popTimer = null; armOutside();
+      pop.textContent = '';
+      const choose = pkg => { setSlot(k, pkg); closePop(); if (launch) send(pkg); else showToast('✓ Сохранено', 1200); };
+      APPS.forEach(a => pop.append(mkCircle(a.g, a.c, () => choose(a.pkg))));
+      pop.append(mkCircle('✎', ['#b0bec5', '#37474f'], () => {
+        const v = (prompt('Имя пакета приложения, например com.snaptube.premium', getSlot(k)) || '').trim();
+        if (/^[a-zA-Z]\w*(\.\w+)+$/.test(v)) choose(v); else if (v) showToast('Неверное имя пакета', 1800);
+      }));
+      if (getSlot(k)) pop.append(mkCircle('🚫', ['#757575', '#212121'], () => { setSlot(k, ''); closePop(); }));
+    };
+    const renderMain = () => {
+      pop.textContent = '';
+      pop.append(
+        mkCircle('↗', ['#90a4ae', '#455a64'], run(() => openTab(tabUrl, true))),
+        mkCircle('📝', ['#ba68c8', '#6a1b9a'], run(() => openTab(svUrl, false))),
+        mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),
+        mkCircle('🎧', ['#4db6ac', '#00695c'], run(() => launchIntent(audioIntent(url, title)))),
+        ...SLOTS.map(k => {
+          const pkg = getSlot(k);
+          if (!pkg) return mkCircle('＋', null, () => renderPicker(k, true), () => renderPicker(k, false), true);
+          const a = appInfo(pkg);
+          return mkCircle(a.g, a.c, run(() => send(pkg)), () => renderPicker(k, false));
+        })
+      );
+    };
+    renderMain();
+    document.body.appendChild(pop);
+    if (CFG.shareMenu) popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
+    else armOutside();   // режим «только первое меню»: без таймера, закрывается тапом мимо
+  }
+  function patchCard(card) {
+    if (card.dataset.ytSharePatched) return;
+    card.dataset.ytSharePatched = '1';
+    card.addEventListener('click', e => {
+      if (!CFG.shareOnTap) return;
+      const info = getVideoInfo(card); if (!info) return;
+      e.preventDefault(); e.stopImmediatePropagation();
+      openShare(info, extractInfo(card).title);
+    }, true);
+  }
+  const cardObserver = new MutationObserver(() => {
+    document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard);
+    scheduleScan();
+  });
+
+  // ── Переворот вверх ногами → конец ленты ───────────────────────────────────
+  // Пока телефон перевёрнут, прокрутка в конец повторяется (лента дозагружается и
+  // уходит дальше). Работает независимо от озвучки; озвучка на это время ставится на паузу.
+  let flipT = null, flipLoop = null;
+  const CONT_SEL = 'ytm-continuation-item-renderer,ytd-continuation-item-renderer,[class*="continuation-item"]';
+  let flipH = 0, flipSame = 0;
+  function flipStep() {
+    const h = document.documentElement.scrollHeight;
+    if (h === flipH) flipSame++; else { flipSame = 0; flipH = h; }
+    // Лента не растёт — «встряхиваем»: чуть вверх, затем снова вниз, чтобы сработала подгрузка
+    if (flipSame >= 3 && flipSame % 2 === 1) { window.scrollBy(0, -500); return; }
+    const c = document.querySelector(CONT_SEL);
+    if (c) c.scrollIntoView({ block: 'end', behavior: 'instant' });
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+  function flipStart() {
+    navigator.vibrate && navigator.vibrate(60);
+    showToast('⤓ Конец ленты', 1200);
+    if (enabled) { speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD(); synth.cancel(); }
+    flipH = 0; flipSame = 0;
+    flipStep();
+    flipLoop = setInterval(flipStep, 500);
+  }
+  function flipStop() {
+    clearTimeout(flipT); flipT = null;
+    if (!flipLoop) return;
+    clearInterval(flipLoop); flipLoop = null;
+    if (enabled && !paused) goTo(findCenterIndex());
+  }
+  function onFlip(e) {
+    if (!CFG.flipBottom || e.beta == null) { flipStop(); return; }
+    const down = e.beta < -60 && e.beta > -125 && Math.abs(e.gamma || 0) < 50;
+    if (down) { if (!flipT && !flipLoop) flipT = setTimeout(() => { flipT = null; flipStart(); }, 350); }
+    else flipStop();
+  }
+
+  // ── Нижняя панель YouTube: прячем при прокрутке вниз ───────────────────────
+  const BAR_SELS = ['ytm-pivot-bar-renderer', '.pivot-bar-renderer', '#pivot-bar', 'ytm-bottom-bar-renderer', 'ytm-mobile-bottom-bar-renderer', '.ytt-bar'];
+  function findBar() {
+    document.querySelectorAll('ytm-app *, body > *').forEach(el => {
+      if (el.classList.contains('ytt-bar')) return;
+      if (!/pivot|bottom|nav|tab/i.test(el.tagName + ' ' + (el.getAttribute('class') || '') + ' ' + el.id)) return;
+      const r = el.getBoundingClientRect();
+      if (r.height < 30 || r.height > 140 || r.width < innerWidth * 0.9 || r.bottom < innerHeight - 2) return;
+      if (getComputedStyle(el).position === 'fixed') el.classList.add('ytt-bar');
+    });
+  }
+  function initBar() {
+    const st = document.createElement('style');
+    st.textContent = BAR_SELS.join(',') + '{transition:transform .25s ease!important}' +
+      BAR_SELS.map(s => 'html.ytt-hide ' + s).join(',') + '{transform:translateY(120%)!important}';
+    document.head.appendChild(st);
+    let lastY = window.scrollY;
+    window.addEventListener('scroll', () => {
+      if (!CFG.hideBar) return;
+      const y = window.scrollY, d = y - lastY;
+      if (Math.abs(d) < 6) return;
+      document.documentElement.classList.toggle('ytt-hide', d > 0 && y > 60);
+      lastY = y;
+    }, { passive: true });
+    [1500, 4000, 8000].forEach(t => setTimeout(findBar, t));
+  }
+
+  // ── Инициализация ──────────────────────────────────────────────────────────
+  function init() {
+    if (document.getElementById('yt-tts-play')) return;
+    createUI();
+    registerMenuCommands();
+    document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard);
+    cardObserver.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener('deviceorientation', onFlip, { passive: true });
+    window.addEventListener('scroll', scheduleScan, { passive: true });
+    initBar();
+    scheduleScan();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+
+  // ── SPA навигация ──────────────────────────────────────────────────────────
+  let lastUrl = location.href;
+  new MutationObserver(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href; setTimeout(findBar, 1500);
+      scheduleScan();
+      if (enabled) {
+        speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD();
+        synth.cancel(); lastSpokenEl = null;
+        if (!paused) waitForCards(() => goTo(findCenterIndex()));
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+
+})();
