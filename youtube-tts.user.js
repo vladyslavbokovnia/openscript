@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.6
+// @version 11.7
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -916,6 +916,9 @@
   // 🎧: ссылка и название уходят в Universal-application (модуль «YouTube аудио»): он скачает русскую дорожку и превью
   const audioIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
     'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
+  // 🗣: ссылка и название уходят в модуль «VOT перевод» (перевод Яндекса, русская озвучка в Music/VOT)
+  const votIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-votaudio;package=im.manus.universalhost;' +
+    'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
   const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;' + (pkg ? 'package=' + pkg + ';' : '') + 'action=android.intent.action.VIEW;end';
   async function doShare(url, title) {
     if (navigator.share) {
@@ -1009,6 +1012,7 @@
         mkCircle('📝', ['#ba68c8', '#6a1b9a'], run(() => openTab(svUrl, false))),
         mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),
         mkCircle('🎧', ['#4db6ac', '#00695c'], run(() => launchIntent(audioIntent(url, title)))),
+        mkCircle('🗣', ['#7986cb', '#283593'], run(() => launchIntent(votIntent(url, title)))),
         ...SLOTS.map(k => {
           const pkg = getSlot(k);
           if (!pkg) return mkCircle('＋', null, () => renderPicker(k, true), () => renderPicker(k, false), true);
