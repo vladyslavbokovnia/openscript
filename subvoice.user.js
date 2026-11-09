@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.7
+// @version      1.8
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/ (или по ссылке #sv=<видео>)
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -99,13 +99,13 @@ async function translate(src){const lg=det(src);if(lg==='ru')return counter();co
 try{for(let i=0;i<cs.length;i++){let t;try{t=await gt(cs[i],lg)}catch(e){t='';for(const c of chunks(cs[i],430))t+=(t?' ':'')+await mm(c,lg)}out.push(t);const p=Math.round((i+1)/cs.length*100);bar.style.width=p+'%';info('Перевод '+p+'%')}
 trans=out.join('\n\n');stopSpeech();showOrig=false;$('swap').textContent='Оригинал';show(trans)}catch(e){info('Ошибка перевода · интернет?')}setTimeout(()=>bar.style.width=0,600)}
 $('pick').onclick=()=>$('file').click();
-$('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;let t;try{t=cleanText(await f.text())}catch(x){return info('Не удалось открыть файл')}fname=f.name;orig=flow(t);trans='';showOrig=false;stopSpeech();show(orig);e.target.value='';info('Перевод…');await translate(orig)};
+$('file').onchange=async e=>{const f=e.target.files[0];if(!f)return;let t;try{t=cleanText(await f.text())}catch(x){return info('Не удалось открыть файл')}keepLink('');fname=f.name;orig=flow(t);trans='';showOrig=false;stopSpeech();show(orig);e.target.value='';info('Перевод…');await translate(orig)};
 const modal=$('modal');$('settings').onclick=()=>modal.classList.add('open');$('close').onclick=()=>modal.classList.remove('open');modal.onclick=e=>{if(e.target===modal)modal.classList.remove('open')};
 $('swap').onclick=()=>{if(!trans)return;showOrig=!showOrig;stopSpeech();show(showOrig?orig:trans);$('swap').textContent=showOrig?'Перевод':'Оригинал'};
 $('rew').onclick=()=>{stopSpeech();idx=0;mark();modal.classList.remove('open')};
 $('copy').onclick=async()=>{try{await navigator.clipboard.writeText(cur);info('Скопировано')}catch(e){info('Не удалось скопировать')}};
 $('dl').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([cur],{type:'text/plain;charset=utf-8'}));a.download=(fname.replace(/\.[^.]+$/,'')||'subtitles')+'-ru.txt';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
-$('clear').onclick=()=>{stopSpeech();orig=trans='';fname='';show('');modal.classList.remove('open')};
+$('clear').onclick=()=>{keepLink('');stopSpeech();orig=trans='';fname='';show('');modal.classList.remove('open')};
 function lab(){$('rl').textContent=(+$('rate').value).toFixed(1)+'×';$('tl').textContent=$('tilt').value+'°'}
 ['rate','tilt'].forEach(k=>{const v=LS(k);if(v)$(k).value=v;$(k).oninput=()=>{LS(k,$(k).value);lab()}});
 $('ton').checked=LS('ton')!=='0';$('ton').onchange=()=>LS('ton',$('ton').checked?1:0);$('voice').onchange=()=>LS('voice',$('voice').value);$('asc').checked=LS('asc')!=='0';$('asc').onchange=()=>LS('asc',$('asc').checked?1:0);
@@ -141,9 +141,11 @@ const pick=subs.find(s=>s.lan==='ru')||subs.find(s=>!/^ai-/.test(s.lan))||subs[0
 const body=JSON.parse((await gm(su)).responseText).body||[];
 return{title:v.title+(v.pages&&v.pages.length>1?' · P'+p:''),text:body.map(x=>String(x.content).replace(/\s+/g,' ').trim()).filter(Boolean).join('\n\n')}}
 async function getSubs(u){u=u.trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);if(m)return ytSubs(m[1]);if(/bilibili\.com|b23\.tv/.test(u))return biliSubs(u);if(/^[\w-]{11}$/.test(u))return ytSubs(u);throw new Error('Не похоже на ссылку YouTube или Bilibili')}
-async function loadLink(u){stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){show('');const d=document.createElement('div');d.style.cssText='color:#f0a0a0;font-size:14px;white-space:pre-wrap;word-break:break-word';d.textContent='⚠️ '+e.message+'\n\n'+u;$('reader').textContent='';$('reader').append(d);return info('⚠️ ошибка · подробности ниже')}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)}
+function keepLink(u){LS('lastLink',u||'');try{history.replaceState(null,'',location.pathname+location.search+(u?'#sv='+encodeURIComponent(u):''))}catch(e){}}
+async function loadLink(u){keepLink(u);stopSpeech();info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){show('');const d=document.createElement('div');d.style.cssText='color:#f0a0a0;font-size:14px;white-space:pre-wrap;word-break:break-word';d.textContent='⚠️ '+e.message+'\n\n'+u;$('reader').textContent='';$('reader').append(d);return info('⚠️ ошибка · подробности ниже')}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig)}
 $('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;loadLink(u)};
 lab();show('');sens();
 // Открытие по ссылке из youtube-tts: https://example.com/#sv=<ссылка на видео> — субтитры грузятся и переводятся сами
-const hm=location.hash.match(/[#&]sv=([^&]+)/);if(hm){let u='';try{u=decodeURIComponent(hm[1])}catch(e){}try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}if(u)loadLink(u)}
+// Ссылка хранится и в адресе (#sv=), и в localStorage: после перезагрузки страницы вкладкой или браузером ролик загрузится сам
+{const hm=location.hash.match(/[#&]sv=([^&]+)/);let u='';if(hm){try{u=decodeURIComponent(hm[1])}catch(e){}}if(!u)u=LS('lastLink')||'';if(u)loadLink(u)}
 })();
