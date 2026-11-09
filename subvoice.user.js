@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SUBVOICE
 // @namespace    subvoice
-// @version      1.9
+// @version      1.10
 // @description  Субтитры: перевод на русский, озвучка, перемотка наклонами; кнопка 🔗 — субтитры по ссылке YouTube/Bilibili. Открывать страницу: https://example.com/ (или по ссылке #sv=<видео>)
 // @match        https://*/*
 // @updateURL    https://raw.githubusercontent.com/vladyslavbokovnia/openscript/main/subvoice.user.js
@@ -59,6 +59,7 @@ document.body.removeAttribute('style');document.body.innerHTML=`
 <div class="row"><label for="tilt">Порог наклона <span id="tl"></span> · сейчас <span id="ang">—</span></label><input id="tilt" type="range" min="8" max="30" step="2" value="16"></div>
 <div class="btns row"><button class="ib" id="swap">Оригинал</button><button class="ib" id="rew">В начало</button><button class="ib" id="copy">Копировать</button><button class="ib" id="dl">Скачать</button><button class="ib" id="clear">Очистить</button><button class="ib" id="close">Закрыть</button></div>
 <div class="row"><button class="ib" id="chk" style="width:100%;height:42px;font-size:14px">Проверить датчики</button><pre class="note" id="diag" style="white-space:pre-wrap;margin:8px 0 0"></pre></div>
+<div class="btns row"><button class="ib" id="cx1">Кэш этого ролика</button><button class="ib" id="cx2">Весь кэш</button></div>
 <p class="note">Наклон влево/вправо — предложение назад/вперёд, удержание — продолжает, каждый шаг с вибрацией. Работает при включённом экране.</p>
 </div></div>
 `;
@@ -142,9 +143,13 @@ const body=JSON.parse((await gm(su)).responseText).body||[];
 return{title:v.title+(v.pages&&v.pages.length>1?' · P'+p:''),text:body.map(x=>String(x.content).replace(/\s+/g,' ').trim()).filter(Boolean).join('\n\n')}}
 async function getSubs(u){u=u.trim();const m=u.match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/live\/|\/embed\/)([\w-]{11})/);if(m)return ytSubs(m[1]);if(/bilibili\.com|b23\.tv/.test(u))return biliSubs(u);if(/^[\w-]{11}$/.test(u))return ytSubs(u);throw new Error('Не похоже на ссылку YouTube или Bilibili')}
 function keepLink(u){LS('lastLink',u||'');try{history.replaceState(null,'',location.pathname+location.search+(u?'#sv='+encodeURIComponent(u):''))}catch(e){}}
-// Кэш: готовый оригинал и перевод по ссылке (последние 6 роликов). Повторное открытие не качает субтитры и не переводит заново.
+// Кэш: готовый оригинал и перевод по ссылке, без ограничения числа (удаляется в ⚙). Повторное открытие не качает субтитры и не переводит заново.
 function cacheGet(u){try{return JSON.parse(LS('c:'+u)||'null')}catch(e){return null}}
-function cachePut(u,o){try{LS('c:'+u,JSON.stringify(o));let ix=JSON.parse(LS('cix')||'[]').filter(x=>x!==u);ix.unshift(u);ix.slice(6).forEach(x=>{try{localStorage.removeItem('c:'+x)}catch(e){}});LS('cix',JSON.stringify(ix.slice(0,6)))}catch(e){}}
+function cacheIx(){try{return JSON.parse(LS('cix')||'[]')}catch(e){return[]}}
+function cachePut(u,o){try{LS('c:'+u,JSON.stringify(o));if(!LS('c:'+u))return info('Кэш браузера полон · ⚙ → удалить старые');LS('cix',JSON.stringify([u].concat(cacheIx().filter(x=>x!==u))))}catch(e){}}
+function cacheDel(all){const cu=LS('lastLink')||'',ix=cacheIx();(all?ix:[cu]).forEach(x=>{try{localStorage.removeItem('c:'+x)}catch(e){}});LS('cix',JSON.stringify(all?[]:ix.filter(x=>x!==cu)));cacheLab();info(all?'Кэш очищен':'Кэш этого ролика удалён')}
+function cacheLab(){$('cx1').disabled=!cacheGet(LS('lastLink')||'');$('cx2').textContent='Весь кэш ('+cacheIx().length+')'}
+$('cx1').onclick=()=>cacheDel(false);$('cx2').onclick=()=>{if(confirm('Удалить все сохранённые переводы?'))cacheDel(true)};$('settings').addEventListener('click',cacheLab);
 async function loadLink(u){keepLink(u);stopSpeech();
 const cc=cacheGet(u);if(cc&&cc.orig){fname=cc.title||'';document.title='🎧 '+fname;orig=cc.orig;trans=cc.trans||'';showOrig=false;$('swap').textContent='Оригинал';show(trans||orig);info('Из кэша · '+(fname||''));return}info('Загружаю субтитры…');let r;try{r=await getSubs(u)}catch(e){show('');const d=document.createElement('div');d.style.cssText='color:#f0a0a0;font-size:14px;white-space:pre-wrap;word-break:break-word';d.textContent='⚠️ '+e.message+'\n\n'+u;$('reader').textContent='';$('reader').append(d);return info('⚠️ ошибка · подробности ниже')}fname=r.title;document.title='🎧 '+fname;orig=flow(r.text);trans='';showOrig=false;show(orig);info('Перевод…');await translate(orig);if(trans||det(orig)==='ru')cachePut(u,{title:fname,orig:orig,trans:trans})}
 $('link').onclick=async()=>{let u='';try{u=await navigator.clipboard.readText()}catch(e){}if(!/youtu|bilibili|b23\.tv/.test(u))u=prompt('Ссылка на видео YouTube или Bilibili:','')||'';if(!u)return;loadLink(u)};
