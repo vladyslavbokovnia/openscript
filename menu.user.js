@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.11.0
-// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в новой вкладке (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском; видео не запускается само (автозапуск, видео-анимации, YouTube) и не грузится, пока вы не нажали на плеер
+// @version      1.12.0
+// @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в этой же вкладке или в новой (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском; видео не запускается само (автозапуск, видео-анимации, YouTube) и не грузится, пока вы не нажали на плеер
 // @license      MIT
 // @match        *://*/*
 // @run-at       document-start
@@ -326,6 +326,7 @@
     u: null,              // фраза, которую озвучивают сейчас: события любых других фраз игнорируются
     ci: 0, cs: 0, ce: 0, t0: 0,
     lastIdx: 0, boundaryAt: 0, resumeIdx: 0,
+    pendIdx: -1,          // с какого места поставлена следующая фраза, пока она ещё не зазвучала (-1 — такой нет)
     raf: 0, lastTs: 0, noScrollUntil: 0, ownScrollAt: 0, sy: null, sp: null,
     tmp: null,
     lang: null            // язык речи для поля ввода (null — по языку страницы)
@@ -333,6 +334,7 @@
 
   // viewBox обрезан до самого рисунка, поэтому значки крупные и без лишних полей
   const ICONS = {
+    here: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M8 12h8"/><path d="M13 8.5l3.5 3.5-3.5 3.5"/></g></svg>',
     newtab: '<svg viewBox="2 2 20 20"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6"/><path d="M20 4l-9 9"/><path d="M18 14v4a2 2 0 01-2 2H6a2 2 0 01-2-2V8a2 2 0 012-2h4"/></g></svg>',
     profile: '<svg viewBox="2 2 20 20"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4.2 3.6-7 8-7s8 2.8 8 7z"/></svg>'
   };
@@ -393,9 +395,10 @@
   function buildItems() {
     const items = [];
     if (cfg.link && linkEl) {
-      items.push({ icon: ICONS.newtab, color: '#2e9e5b', run: () => { close(); openTarget(linkEl); } });
+      items.push({ icon: ICONS.here, color: '#3b82f6', title: 'В этой вкладке', run: () => { close(); openTarget(linkEl, null, true); } });
+      items.push({ icon: ICONS.newtab, color: '#2e9e5b', title: 'В новой вкладке', run: () => { close(); openTarget(linkEl); } });
       const pr = getProfiles();
-      if (pr.length > 1) items.push({ icon: ICONS.profile, color: '#e08a1e', run: () => showProfiles(pr) });
+      if (pr.length > 1) items.push({ icon: ICONS.profile, color: '#e08a1e', title: 'В новой вкладке, профиль на выбор', run: () => showProfiles(pr) });
     }
     return items;
   }
@@ -694,6 +697,7 @@
     S.gen++;
     const my = S.gen;
     S.u = null;
+    S.pendIdx = idx;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'playing';
     startLoop();
@@ -701,18 +705,28 @@
     setTimeout(() => playChunk(my, ci, idx), RESPEAK_MS);
   }
 
-  function playChunk(my, ci, from, tries) {
+  function playChunk(my, ci, from, tries, natural) {
     if (my !== S.gen) return;
     if (ci >= S.chunks.length) { stopReading(); return; }
     const c = S.chunks[ci];
     const s = Math.max(c.s, from || 0);
     const text = S.doc.text;
     const r0 = rate, t1 = performance.now();
-    let started = 0, painted = false, finished = false;
-    S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = t1;
-    S.lastIdx = s; S.boundaryAt = 0;
-    mediaPosition();
-    try { S.sp = scrollParentOf(pos(s).node.parentElement); } catch (e) { S.sp = null; }
+    let started = 0, painted = false, finished = false, adopted = false;
+
+    // Текущей (по ней идут прокрутка, подсветка и перемотка свайпами) фраза становится, когда речь по ней реально пошла,
+    // а не когда она поставлена в очередь: у сетевых голосов между фразами пауза в долю секунды и больше, и если считать
+    // текущей сразу, прокрутка убегает на фразу вперёд звука, а «назад» попадает не туда. После перемотки или тапа
+    // (natural = false) текущей становится сразу: страница должна откликнуться без задержки
+    const adopt = at => {
+      if (adopted || my !== S.gen) return;
+      adopted = true;
+      S.ci = ci; S.cs = s; S.ce = c.e; S.t0 = at;
+      S.lastIdx = s; S.boundaryAt = 0; S.pendIdx = -1;
+      mediaPosition();
+      try { S.sp = scrollParentOf(pos(s).node.parentElement); } catch (e) { S.sp = null; }
+    };
+    if (natural) S.pendIdx = s; else adopt(t1);
 
     const u = new SpeechSynthesisUtterance(text.slice(s, c.e));
     S.u = u;
@@ -725,22 +739,25 @@
 
     // Подсветка предложения появляется, когда речь реально началась, а не когда фраза поставлена в очередь:
     // после перемотки движок ещё может договаривать прошлую фразу, и подсветка не должна убегать вперёд звука.
-    // Если движок не присылает onstart, подсвечиваем через 0,8 с
+    // Если движок не присылает onstart, подсвечиваем (и считаем фразу текущей) через 0,8 с, а при переходе к следующей — через 1,5 с
     const paint = () => {
       if (painted || !live()) return;
       painted = true;
+      adopt(performance.now());
       const sp = sentSpan(ci);
       paintSentence(sp.s, sp.e);
     };
     u.onstart = () => {
       if (!live()) return;
       started = performance.now();
+      adopt(started);
       S.t0 = started;                               // от начала речи считаем место чтения
       paint();
     };
     u.onboundary = ev => {
       if (!live()) return;
       if (ev.name && ev.name !== 'word') return;
+      adopt(performance.now());
       S.lastIdx = s + ev.charIndex;
       S.boundaryAt = performance.now();
       paintWord(S.lastIdx, ev.charLength);
@@ -751,7 +768,7 @@
       // «закончилось», не начавшись, за долю секунды у длинной фразы — движок её отбросил (бывает после cancel()):
       // читаем эту же фразу ещё раз, а не перескакиваем к следующей
       if (!started && performance.now() - t1 < 250 && c.e - s > 40 && (tries || 0) < 2) {
-        setTimeout(() => playChunk(my, ci, from, (tries || 0) + 1), 150);
+        setTimeout(() => playChunk(my, ci, from, (tries || 0) + 1, natural), 150);
         return;
       }
       // движок не присылал события слов: по фактической длительности фразы уточняем скорость голоса
@@ -759,7 +776,7 @@
         const dt = (performance.now() - started) / 1000, n = c.e - s;
         if (n >= 25 && dt > 1) calibrate(n / dt / r0);
       }
-      playChunk(my, ci + 1);
+      playChunk(my, ci + 1, 0, 0, true);
     };
     u.onerror = ev => {
       if (!live() || finished) return;
@@ -770,20 +787,23 @@
         toast('Браузер не разрешил озвучку: коснитесь экрана');
         return;
       }
-      playChunk(my, ci + 1);
+      playChunk(my, ci + 1, 0, 0, true);
     };
     keep.push(u);
     if (keep.length > 6) keep.shift();
-    setTimeout(paint, 800);
+    setTimeout(paint, natural ? 1500 : 800);
     speechSynthesis.speak(u);
   }
+
+  // Где сейчас чтение: если следующая фраза уже поставлена, но ещё не зазвучала, то в её начале
+  const curIdx = () => S.pendIdx >= 0 ? S.pendIdx : (S.boundaryAt ? S.lastIdx : S.cs);
 
   function pauseReading() {
     if (S.state !== 'playing') return;
     S.gen++;
     S.u = null;
     try { speechSynthesis.cancel(); } catch (e) {}
-    S.resumeIdx = S.boundaryAt ? S.lastIdx : S.cs;
+    S.resumeIdx = curIdx();
     S.state = 'paused';
     mediaSync();
   }
@@ -798,7 +818,7 @@
     S.u = null;
     try { speechSynthesis.cancel(); } catch (e) {}
     S.state = 'idle';
-    S.doc = null; S.chunks = []; S.sp = null; S.sy = null; S.lang = null;
+    S.doc = null; S.chunks = []; S.sp = null; S.sy = null; S.lang = null; S.pendIdx = -1;
     if (HL) { HL.sent.clear(); HL.word.clear(); }
     saveCps();
     mediaTeardown();
@@ -875,17 +895,18 @@
 
   let down = null;
 
+  // true — озвучка запущена с места тапа
   function jumpAt(x, y) {
     const wasIdle = S.state === 'idle';
     if (wasIdle) {
       // озвучка ещё не идёт: тап по тексту запускает её с этого места
       const c0 = caretAt(x, y);
-      if (!c0 || !c0.node || c0.node.nodeType !== 3 || !c0.node.data.trim()) return;
+      if (!c0 || !c0.node || c0.node.nodeType !== 3 || !c0.node.data.trim()) return false;
       S.doc = buildDoc();
       S.chunks = makeChunks(S.doc.text);
-      if (!S.chunks.length) { S.doc = null; S.chunks = []; return; }
+      if (!S.chunks.length) { S.doc = null; S.chunks = []; return false; }
     }
-    const fail = () => { if (wasIdle) { S.doc = null; S.chunks = []; } };
+    const fail = () => { if (wasIdle) { S.doc = null; S.chunks = []; } return false; };
     const c = caretAt(x, y);
     if (!c || !S.doc) return fail();
     let idx = toGlobal(c.node, c.offset);
@@ -899,6 +920,15 @@
     } catch (e) { return fail(); }
     S.noScrollUntil = 0;
     speakFrom(idx);
+    return true;
+  }
+
+  // Тап по ссылке или кнопке, который озвучку не запустил (нет текста под пальцем): подсказываем, что делать
+  function hintFor(a) {
+    let t = '';
+    try { t = (a.getAttribute('aria-label') || a.title || a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim(); } catch (e) {}
+    if (t.length > 40) t = t.slice(0, 40) + '…';
+    toast((t ? '«' + t + '»: ' : '') + 'удерживайте, чтобы открыть', 1800);
   }
 
   /* ---------- поля ввода: к ним скрипт не прикасается ---------- */
@@ -928,9 +958,10 @@
   /* ---------- перемотка свайпами влево/вправо ---------- */
 
   const SWIPE_RIGHT_NEXT = true;   // вправо — следующая фраза, влево — предыдущая (false — наоборот)
-  const SWIPE_MIN = 60;            // минимальная длина свайпа, px
-  const SWIPE_MAX_MS = 800;        // быстрее этого времени
-  const SWIPE_EDGE = 28;           // у краёв экрана свайп отдан системе (жест «назад»)
+  const SWIPE_MIN = 50;            // минимальная длина свайпа, px
+  const SWIPE_SLOPE = 1.5;         // насколько горизонтальнее вертикали должен быть свайп (большой палец ведёт дугой, с 2 промахов было много)
+  const SWIPE_MAX_MS = 900;        // быстрее этого времени
+  const SWIPE_EDGE = 24;           // у краёв экрана свайп отдан системе (жест «назад»)
   let sw = null;
 
   function hScrollable(el) {
@@ -959,7 +990,7 @@
     if (!s0 || S.state === 'idle' || !e.changedTouches.length) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - s0.x, dy = t.clientY - s0.y;
-    if (performance.now() - s0.t > SWIPE_MAX_MS || Math.abs(dx) < SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * 2) return;
+    if (performance.now() - s0.t > SWIPE_MAX_MS || Math.abs(dx) < SWIPE_MIN || Math.abs(dx) < Math.abs(dy) * SWIPE_SLOPE) return;
     skipSentence((dx > 0) === SWIPE_RIGHT_NEXT ? 1 : -1);
   }, { passive: true, capture: true });
 
@@ -1002,7 +1033,7 @@
     if (S.state === 'playing') {
       // новую скорость применяем с текущего слова; при быстром удержании кнопки — один раз в конце
       clearTimeout(rateTimer);
-      rateTimer = setTimeout(() => { if (S.state === 'playing') speakFrom(S.boundaryAt ? S.lastIdx : S.cs); }, 350);
+      rateTimer = setTimeout(() => { if (S.state === 'playing') speakFrom(curIdx()); }, 350);
     }
   }
 
@@ -1470,8 +1501,19 @@
     });
   }
 
-  async function openTarget(el, profile) {
+  // «Здесь»: ссылка с адресом открывается в этой же вкладке, а кнопка нажимается по-настоящему, как пальцем
+  function pressHere(el) {
+    try {
+      const path = [];
+      for (let e = el; e && path.length < 16; e = e.parentElement) path.push(e);
+      nvGest = { path, t: performance.now() };   // нажатие считается вашим: иначе блокировка автозапуска не даст включиться плееру
+      el.click();
+    } catch (e) {}
+  }
+
+  async function openTarget(el, profile, same) {
     let url = staticUrl(el);
+    if (!url && same) { pressHere(el); return; }
     if (!url) {
       toast('Определяю адрес…', 1600);
       const r = await probeUrl(el);
@@ -1479,6 +1521,7 @@
       url = r && r.url;
     }
     if (!url) { toast('Эта кнопка не открывает страницу', 2200); return; }
+    if (same) { location.href = url; return; }
     openLink(url, profile);
   }
 
@@ -1884,7 +1927,7 @@
     clickGuard = false;                             // новое касание — прошлое уже закончилось
     lpCancel();
     const inHost = host && e.composedPath().includes(host);
-    if (isOpen && !inHost) close();
+    if (isOpen && !inHost) { close(); down = null; return; }   // тап мимо меню только закрывает его: озвучку он не трогает
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
     if (inHost || !cfg.link || !e.isPrimary || e.pointerType === 'mouse') return;
     const a = targetFrom(e);
@@ -1910,7 +1953,10 @@
     if (inEditable(t) || typingNow()) return;       // тап по полю или пока открыта клавиатура — озвучку не трогаем
     if (S.state === 'playing') { stopReading(); return; }   // тап во время озвучки — стоп
     if (S.doc && S.doc.field) return;
-    jumpAt(e.clientX, e.clientY);
+    if (!jumpAt(e.clientX, e.clientY) && cfg.link) {          // озвучка не началась: если это ссылка или кнопка, подсказываем про долгое нажатие
+      const a = targetFrom(e);
+      if (a) hintFor(a);
+    }
   }, true);
 
   // закрываем меню только от прокрутки пальцем, а не от нашей автопрокрутки озвучки
