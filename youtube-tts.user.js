@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.7
+// @version 11.8
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.6';
+  const VERSION = '11.8';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -868,17 +868,17 @@
     return null;
   }
 
-  // По тапу: сразу появляется ряд полупрозрачных кружков-значков (без текста):
-  //   ↗ — новая вкладка с переходом в неё (не в фоне);
-  //   📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами этого видео;
-  //   📤 — системный выбор любого приложения из установленных;
-  //   два последних кружка — «слоты»: запоминают приложение и открывают его сразу.
-  //     Пустой слот (＋) по тапу показывает ряд значков приложений — выбор запоминается и ссылка сразу уходит туда;
-  //     удержание слота — выбрать другое приложение. Страница не может узнать, что вы выбрали в системном списке,
-  //     поэтому слот привязывается к приложению по имени пакета (✎ — ввести своё).
-  // Если за 1,5 с ничего не нажать — открывается системное «Поделиться».
-  // Если выключена настройка shareMenu — остаётся только это первое меню: без таймера,
-  // закрывается выбором пункта или тапом мимо.
+  // По тапу на карточку сразу появляется ряд полупрозрачных кружков-значков (без текста). Состав и порядок настраиваются:
+  //   ⚙ — режим правки (тап по кружку скрывает/показывает его; перетащить кружок на другой — получится папка 📁,
+  //       из папки кружок вытаскивают на пустое место ряда); 🔊 — вслух перечисляет, что делают кнопки; удержание кружка — подробнее вслух.
+  //   ↗ — новая вкладка с переходом в неё; 📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами;
+  //   🎧 — модуль «YouTube аудио» в Universal-application: скачать русскую дорожку (очистка «эээ» — как в настройках модуля);
+  //   🧹 — то же, но «эээ» вырезаются обязательно; 🗣 — перевод Яндекса;
+  //   три одинаковые кнопки приложений: тап — отправить ссылку в запомненное приложение, а если оно не выбрано — системное «Поделиться»;
+  //   удержание — выбрать приложение (значки или имя пакета через ✎). Страница не может узнать выбор в системном списке,
+  //   поэтому приложение привязывается по имени пакета.
+  // Если за 1,5 с никто не коснулся меню — открывается системное «Поделиться».
+  // Если выключена настройка shareMenu — остаётся только это меню: без таймера, закрывается выбором пункта или тапом мимо.
   // Страница не знает про группы вкладок: новая вкладка встаёт в группу вкладки-источника — это решает браузер.
   let pop = null, popTimer = null, popOutside = null;
   function closePop() {
@@ -919,6 +919,9 @@
   // 🗣: ссылка и название уходят в модуль «VOT перевод» (перевод Яндекса, русская озвучка в Music/VOT)
   const votIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-votaudio;package=im.manus.universalhost;' +
     'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
+  // 🧹: то же, что 🎧, но с флагом clean: «эээ» вырезаются, даже если в настройках модуля очистка выключена
+  const cleanIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
+    'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';B.clean=true;end';
   const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;' + (pkg ? 'package=' + pkg + ';' : '') + 'action=android.intent.action.VIEW;end';
   async function doShare(url, title) {
     if (navigator.share) {
@@ -931,18 +934,17 @@
     try { launchIntent(sendIntent(url)); return; } catch {}
     try { await navigator.clipboard.writeText(url); showToast('Скопировано: ' + url); } catch { showToast(url); }
   }
-  // Значки приложений для слотов: глиф и цвета кружка
+  // Значки приложений для слотов: имя (для озвучки), глиф и цвета кружка
   const APPS = [
-    { pkg: 'com.snaptube.premium',       g: '⬇',  c: ['#29b6f6', '#1565c0'] },
-    { pkg: 'org.schabi.newpipe',         g: '▶',  c: ['#ef5350', '#b71c1c'] },
-    { pkg: 'com.google.android.youtube', g: '📺', c: ['#ff5252', '#c62828'] },
-    { pkg: 'com.deniscerri.ytdl',        g: '⤓',  c: ['#66bb6a', '#2e7d32'] },
-    { pkg: 'com.junkfood.seal',          g: '🦭', c: ['#4dd0e1', '#00838f'] },
-    { pkg: 'org.telegram.messenger',     g: '✈',  c: ['#4fc3f7', '#0277bd'] },
+    { pkg: 'com.snaptube.premium',       n: 'Snaptube', g: '⬇',  c: ['#29b6f6', '#1565c0'] },
+    { pkg: 'org.schabi.newpipe',         n: 'NewPipe',  g: '▶',  c: ['#ef5350', '#b71c1c'] },
+    { pkg: 'com.google.android.youtube', n: 'YouTube',  g: '📺', c: ['#ff5252', '#c62828'] },
+    { pkg: 'com.deniscerri.ytdl',        n: 'YTDLnis',  g: '⤓',  c: ['#66bb6a', '#2e7d32'] },
+    { pkg: 'com.junkfood.seal',          n: 'Seal',     g: '🦭', c: ['#4dd0e1', '#00838f'] },
+    { pkg: 'org.telegram.messenger',     n: 'Телеграм', g: '✈',  c: ['#4fc3f7', '#0277bd'] },
   ];
   const appInfo = pkg => APPS.find(a => a.pkg === pkg) ||
-    { pkg, g: (pkg.split('.').pop() || '?').charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
-  const SLOTS = ['slotApp1', 'slotApp2'];
+    { pkg, n: pkg.split('.').pop() || pkg, g: (pkg.split('.').pop() || '?').charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
   const getSlot = k => { try { return GM_getValue(k, '') || ''; } catch { return ''; } };
   const setSlot = (k, v) => { try { GM_setValue(k, v); } catch {} };
 
@@ -974,58 +976,270 @@
     return b;
   }
 
+  // ── Раскладка меню: порядок, папки, скрытые кнопки ─────────────────────────
+  // Хранится в menuLayout: { order: [id | { f: 'f123', items: [id…] }], hidden: [id кнопки или папки…] }.
+  // Любая кнопка, которой нет в сохранённом виде (например, новая в обновлении), добавляется в конец.
+  const BTN_IDS = ['tab', 'sv', 'aud', 'clean', 'vot', 'app1', 'app2', 'app3'];
+  const GRAY = ['#90a4ae', '#455a64'];
+  function fixLayout(L) {
+    const seen = new Set(), order = [];
+    const take = id => { if (BTN_IDS.includes(id) && !seen.has(id)) { seen.add(id); return true; } return false; };
+    for (const e of (L && Array.isArray(L.order) ? L.order : [])) {
+      if (typeof e === 'string') { if (take(e)) order.push(e); }
+      else if (e && e.f && Array.isArray(e.items)) {
+        const items = e.items.filter(take);
+        if (items.length > 1) order.push({ f: String(e.f), items });
+        else if (items.length === 1) order.push(items[0]);   // в папке остался один — папка не нужна
+      }
+    }
+    BTN_IDS.forEach(id => { if (!seen.has(id)) order.push(id); });
+    const ids = new Set(order.map(e => typeof e === 'string' ? e : e.f));
+    const hidden = (L && Array.isArray(L.hidden) ? L.hidden : []).filter(h => ids.has(h));
+    return { order, hidden };
+  }
+  function loadLayout() {
+    let L = null;
+    try { L = JSON.parse(GM_getValue('menuLayout', '')); } catch {}
+    return fixLayout(L);
+  }
+  function saveLayout(L) { try { GM_setValue('menuLayout', JSON.stringify(L)); } catch {} }
+
+  // Короткая озвучка пояснений. Если идёт озвучка ленты, она ставится на паузу (иначе после обрыва пошла бы дальше).
+  function sayHint(text) {
+    try {
+      if (enabled && !paused) pauseTTS();
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.lang = CFG.lang; u.rate = CFG.rate; u.volume = 1.0;
+      synth.speak(u);
+    } catch {}
+  }
+
+  let dragMoved = false;
+
   function openShare(info, title) {
     closePop();
     const url = `https://youtu.be/${info.id}`;
     const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
     const svUrl = 'https://example.com/#sv=' + encodeURIComponent(url);
+    let view = '';   // '' — главный ряд, 'edit' — правка, 'pick' — выбор приложения, иначе id открытой папки
     pop = document.createElement('div');
     Object.assign(pop.style, {
       position: 'fixed', bottom: '100px', left: '50%', transform: 'translateX(-50%)',
-      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '12px', zIndex: '2147483647', width: '92vw',
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', alignItems: 'center', gap: '12px', zIndex: '2147483647', width: '92vw',
     });
-    // Закрытие тапом мимо (в режиме без таймера и при выборе приложения для слота)
+    // Закрытие тапом мимо (в режиме без таймера, при правке, в папке и при выборе приложения)
     const armOutside = () => {
       if (popOutside) return;
       popOutside = e => { if (pop && !pop.contains(e.target)) closePop(); };
       setTimeout(() => { if (pop && popOutside) document.addEventListener('pointerdown', popOutside, true); }, 0);
     };
+    // Как только палец коснулся меню, таймер «системного Поделиться» не нужен
+    const stopTimer = () => { clearTimeout(popTimer); popTimer = null; armOutside(); };
+    pop.addEventListener('pointerdown', stopTimer, true);
     const run = fn => () => { closePop(); fn(); };
     const send = pkg => launchIntent(sendIntent(url, pkg));
 
+    // n — короткое название (для общего обзора 🔊), info — полное пояснение (удержание кнопки)
+    const def = id => {
+      switch (id) {
+        case 'tab':
+          return { n: 'Новая вкладка', info: 'Открыть видео в новой вкладке и перейти в неё', g: '↗', c: GRAY,
+            tap: run(() => openTab(tabUrl, true)) };
+        case 'sv':
+          return { n: 'Русские субтитры', info: 'Открыть в фоне вкладку с русскими субтитрами этого видео', g: '📝', c: ['#ba68c8', '#6a1b9a'],
+            tap: run(() => openTab(svUrl, false)) };
+        case 'aud':
+          return { n: 'Скачать аудио', info: 'Скачать русскую аудиодорожку. Вырезать ли эээ, решает настройка модуля', g: '🎧', c: ['#4db6ac', '#00695c'],
+            tap: run(() => launchIntent(audioIntent(url, title))) };
+        case 'clean':
+          return { n: 'Скачать аудио без эээ', info: 'Скачать русскую аудиодорожку и обязательно вырезать эээ', g: '🧹', c: ['#aed581', '#558b2f'],
+            tap: run(() => launchIntent(cleanIntent(url, title))) };
+        case 'vot':
+          return { n: 'Перевод Яндекса', info: 'Перевод Яндекса: русская озвучка ролика', g: '🗣', c: ['#7986cb', '#283593'],
+            tap: run(() => launchIntent(votIntent(url, title))) };
+        default: {   // app1..app3: три одинаковые кнопки приложений
+          const k = 'slotApp' + id.slice(3), pkg = getSlot(k);
+          if (!pkg) return { n: 'Поделиться', info: 'Поделиться через системное меню. Удержание: выбрать приложение для этой кнопки',
+            g: '📤', c: ['#ffb74d', '#e65100'], tap: run(() => send()), hold: () => renderPicker(k) };
+          const a = appInfo(pkg);
+          return { n: 'Отправить в ' + a.n, info: 'Отправить ссылку в ' + a.n + '. Удержание: выбрать другое приложение',
+            g: a.g, c: a.c, tap: run(() => send(pkg)), hold: () => renderPicker(k) };
+        }
+      }
+    };
+    const circle = id => { const d = def(id); return mkCircle(d.g, d.c, d.tap, d.hold || (() => sayHint(d.info))); };
+    const small = b => { Object.assign(b.style, { width: '42px', height: '42px', fontSize: '18px' }); return b; };
+
+    // Общий обзор вслух: кнопки по порядку, только видимые
+    const overview = L => {
+      const vis = id => !L.hidden.includes(id), parts = [];
+      for (const e of L.order) {
+        if (typeof e === 'string') { if (vis(e)) parts.push(def(e).n); }
+        else if (vis(e.f)) { const ch = e.items.filter(vis).map(i => def(i).n); if (ch.length) parts.push('Папка: ' + ch.join(', ')); }
+      }
+      return 'Кнопки по порядку. ' + parts.join('. ') + '. Удержание кнопки: подробнее.';
+    };
+
     // Выбор приложения для слота: ряд значков; ✎ — ввести имя пакета, 🚫 — очистить слот
-    const renderPicker = (k, launch) => {
-      clearTimeout(popTimer); popTimer = null; armOutside();
+    function renderPicker(k) {
+      stopTimer(); view = 'pick';
       pop.textContent = '';
-      const choose = pkg => { setSlot(k, pkg); closePop(); if (launch) send(pkg); else showToast('✓ Сохранено', 1200); };
+      const back = () => { view = ''; renderMain(); };
+      const choose = pkg => { setSlot(k, pkg); showToast('✓ Сохранено', 1200); back(); };
+      pop.append(small(mkCircle('‹', GRAY, back)));
       APPS.forEach(a => pop.append(mkCircle(a.g, a.c, () => choose(a.pkg))));
       pop.append(mkCircle('✎', ['#b0bec5', '#37474f'], () => {
         const v = (prompt('Имя пакета приложения, например com.snaptube.premium', getSlot(k)) || '').trim();
         if (/^[a-zA-Z]\w*(\.\w+)+$/.test(v)) choose(v); else if (v) showToast('Неверное имя пакета', 1800);
       }));
-      if (getSlot(k)) pop.append(mkCircle('🚫', ['#757575', '#212121'], () => { setSlot(k, ''); closePop(); }));
+      if (getSlot(k)) pop.append(mkCircle('🚫', ['#757575', '#212121'], () => { setSlot(k, ''); back(); }));
+    }
+
+    const toggleHidden = id => {
+      const L = loadLayout(), i = L.hidden.indexOf(id);
+      if (i >= 0) L.hidden.splice(i, 1); else L.hidden.push(id);
+      saveLayout(L); renderMain();
     };
-    const renderMain = () => {
-      pop.textContent = '';
+
+    // Бросили кнопку id в точку (x, y): на центр другой кнопки — папка; на край — перед/после неё;
+    // на рамку папки — внутрь; на пустое место ряда — в конец (так кнопку достают из папки)
+    function dropOn(id, x, y) {
+      const el = document.elementFromPoint(x, y);
+      if (!el || !pop || !pop.contains(el)) return;
+      const L = loadLayout();
+      const detach = () => {
+        L.order = L.order.filter(e => e !== id);
+        L.order.forEach(e => { if (typeof e !== 'string') e.items = e.items.filter(i => i !== id); });
+      };
+      const tb = el.closest('[data-id]'), tf = el.closest('[data-folder]');
+      if (tb && tb.dataset.id === id) return;
+      if (tb && BTN_IDS.includes(tb.dataset.id)) {
+        const tid = tb.dataset.id, r = tb.getBoundingClientRect(), dx = x - (r.left + r.width / 2);
+        detach();
+        const top = L.order.indexOf(tid);
+        if (top >= 0 && Math.abs(dx) < 14) L.order[top] = { f: 'f' + Date.now(), items: [tid, id] };
+        else if (top >= 0) L.order.splice(top + (dx > 0 ? 1 : 0), 0, id);
+        else {
+          const f = L.order.find(e => typeof e !== 'string' && e.items.includes(tid));
+          if (f) f.items.splice(f.items.indexOf(tid) + (dx > 0 ? 1 : 0), 0, id); else L.order.push(id);
+        }
+      } else if (tf) {
+        const f = L.order.find(e => typeof e !== 'string' && e.f === tf.dataset.folder);
+        detach();
+        if (f) f.items.push(id); else L.order.push(id);
+      } else { detach(); L.order.push(id); }
+      saveLayout(fixLayout(L)); renderMain();
+    }
+
+    // Перетаскивание кружка в режиме правки (сдвиг больше 10 px — это уже не тап)
+    function attachDrag(b, id) {
+      b.style.touchAction = 'none';
+      let sx = 0, sy = 0, drag = false, pid = null, ghost = null, hl = null;
+      const mark = el => {
+        if (hl) { hl.style.outline = ''; hl = null; }
+        const t = el && (el.closest('[data-id]') || el.closest('[data-folder]'));
+        if (t && t !== b) { hl = t; hl.style.outline = '3px solid #fff'; }
+      };
+      b.addEventListener('pointerdown', e => {
+        sx = e.clientX; sy = e.clientY; drag = false; pid = e.pointerId;
+        try { b.setPointerCapture(pid); } catch {}
+      });
+      b.addEventListener('pointermove', e => {
+        if (pid === null) return;
+        if (!drag) {
+          if (Math.hypot(e.clientX - sx, e.clientY - sy) < 10) return;
+          drag = true; dragMoved = true; navigator.vibrate && navigator.vibrate(30);
+          b.style.opacity = '0.4';
+          ghost = b.cloneNode(true);
+          Object.assign(ghost.style, { position: 'fixed', pointerEvents: 'none', zIndex: '2147483647', margin: '0', opacity: '0.9', outline: '' });
+          document.body.appendChild(ghost);
+        }
+        ghost.style.left = (e.clientX - 27) + 'px';
+        ghost.style.top = (e.clientY - 27) + 'px';
+        mark(document.elementFromPoint(e.clientX, e.clientY));
+      });
+      const end = e => {
+        if (pid === null) return;
+        const wasDrag = drag;
+        try { b.releasePointerCapture(pid); } catch {}
+        pid = null; drag = false;
+        if (hl) { hl.style.outline = ''; hl = null; }
+        if (ghost) { ghost.remove(); ghost = null; }
+        b.style.opacity = '';
+        if (wasDrag) {
+          if (e.type === 'pointerup') dropOn(id, e.clientX, e.clientY);
+          setTimeout(() => { dragMoved = false; }, 80);   // клик после отпускания не должен скрыть кнопку
+        }
+      };
+      b.addEventListener('pointerup', end);
+      b.addEventListener('pointercancel', end);
+    }
+
+    // Режим правки: видны все кнопки (скрытые бледные); тап скрывает/показывает; перетаскивание собирает папки
+    function renderEdit(L) {
+      const hint = document.createElement('div');
+      hint.textContent = 'Правка: тап — скрыть или показать, перетащить на кнопку — папка';
+      Object.assign(hint.style, { width: '100%', textAlign: 'center', color: '#fff', fontSize: '12px',
+        background: 'rgba(0,0,0,0.6)', padding: '6px 10px', borderRadius: '12px', boxSizing: 'border-box' });
+      pop.append(hint);
+      const dim = (b, id) => { if (L.hidden.includes(id)) { b.style.opacity = '0.35'; b.style.filter = 'grayscale(1)'; } };
+      const ec = id => {
+        const d = def(id);
+        const b = mkCircle(d.g, d.c, () => { if (!dragMoved) toggleHidden(id); });
+        b.dataset.id = id; dim(b, id); attachDrag(b, id);
+        return b;
+      };
+      for (const e of L.order) {
+        if (typeof e === 'string') { pop.append(ec(e)); continue; }
+        const w = document.createElement('div');
+        w.dataset.folder = e.f;
+        Object.assign(w.style, { display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px',
+          border: '2px dashed rgba(255,255,255,0.7)', borderRadius: '40px', background: 'rgba(0,0,0,0.25)' });
+        const mini = mkCircle('📁', ['#78909c', '#37474f'], () => toggleHidden(e.f));
+        Object.assign(mini.style, { width: '36px', height: '36px', fontSize: '17px' });
+        dim(mini, e.f);
+        w.append(mini);
+        e.items.forEach(i => w.append(ec(i)));
+        pop.append(w);
+      }
       pop.append(
-        mkCircle('↗', ['#90a4ae', '#455a64'], run(() => openTab(tabUrl, true))),
-        mkCircle('📝', ['#ba68c8', '#6a1b9a'], run(() => openTab(svUrl, false))),
-        mkCircle('📤', ['#ffb74d', '#e65100'], run(() => send())),
-        mkCircle('🎧', ['#4db6ac', '#00695c'], run(() => launchIntent(audioIntent(url, title)))),
-        mkCircle('🗣', ['#7986cb', '#283593'], run(() => launchIntent(votIntent(url, title)))),
-        ...SLOTS.map(k => {
-          const pkg = getSlot(k);
-          if (!pkg) return mkCircle('＋', null, () => renderPicker(k, true), () => renderPicker(k, false), true);
-          const a = appInfo(pkg);
-          return mkCircle(a.g, a.c, run(() => send(pkg)), () => renderPicker(k, false));
-        })
+        small(mkCircle('↺', ['#757575', '#212121'], () => { saveLayout(null); renderMain(); })),
+        small(mkCircle('✓', ['#66bb6a', '#2e7d32'], () => { view = ''; renderMain(); }))
       );
-    };
+    }
+
+    function renderMain() {
+      pop.textContent = '';
+      const L = loadLayout(), vis = id => !L.hidden.includes(id);
+      if (view) stopTimer();
+      if (view === 'edit') { renderEdit(L); return; }
+      const folder = view && L.order.find(e => typeof e !== 'string' && e.f === view);
+      if (view && !folder) view = '';
+      if (folder) {   // открытая папка: «назад» и её кнопки
+        pop.append(small(mkCircle('‹', GRAY, () => { view = ''; renderMain(); })));
+        folder.items.filter(vis).forEach(id => pop.append(circle(id)));
+        return;
+      }
+      for (const e of L.order) {
+        if (typeof e === 'string') { if (vis(e)) pop.append(circle(e)); continue; }
+        const kids = e.items.filter(vis);
+        if (!vis(e.f) || !kids.length) continue;
+        pop.append(mkCircle('📁', ['#78909c', '#37474f'], () => { view = e.f; renderMain(); },
+          () => sayHint('Папка: ' + kids.map(i => def(i).n).join(', '))));
+      }
+      pop.append(
+        small(mkCircle('🔊', GRAY, () => { stopTimer(); sayHint(overview(L)); })),
+        small(mkCircle('⚙', GRAY, () => { view = 'edit'; renderMain(); }))
+      );
+    }
+
     renderMain();
     document.body.appendChild(pop);
     if (CFG.shareMenu) popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
     else armOutside();   // режим «только первое меню»: без таймера, закрывается тапом мимо
   }
+
   function patchCard(card) {
     if (card.dataset.ytSharePatched) return;
     card.dataset.ytSharePatched = '1';
