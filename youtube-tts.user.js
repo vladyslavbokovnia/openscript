@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.8
+// @version 11.9
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.8';
+  const VERSION = '11.9';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -873,7 +873,7 @@
   //       из папки кружок вытаскивают на пустое место ряда); 🔊 — вслух перечисляет, что делают кнопки; удержание кружка — подробнее вслух.
   //   ↗ — новая вкладка с переходом в неё; 📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами;
   //   🎧 — модуль «YouTube аудио» в Universal-application: скачать русскую дорожку (очистка «эээ» — как в настройках модуля);
-  //   🧹 — то же, но «эээ» вырезаются обязательно; 🗣 — перевод Яндекса;
+  //   🧹 — то же, но «эээ» вырезаются обязательно; 🎬 — видео с русским переводом Яндекса вместо оригинального звука (mp4 в отдельной папке «Видео»);
   //   три одинаковые кнопки приложений: тап — отправить ссылку в запомненное приложение, а если оно не выбрано — системное «Поделиться»;
   //   удержание — выбрать приложение (значки или имя пакета через ✎). Страница не может узнать выбор в системном списке,
   //   поэтому приложение привязывается по имени пакета.
@@ -916,7 +916,8 @@
   // 🎧: ссылка и название уходят в Universal-application (модуль «YouTube аудио»): он скачает русскую дорожку и превью
   const audioIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
     'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
-  // 🗣: ссылка и название уходят в модуль «VOT перевод» (перевод Яндекса, русская озвучка в Music/VOT)
+  // 🎬: ссылка и название уходят в модуль «YouTube аудио»: перевод Яндекса + видео YouTube склеиваются в mp4 (папка «Видео»);
+  // модуль понимает режим видео по типу text/x-votaudio
   const votIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-votaudio;package=im.manus.universalhost;' +
     'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';end';
   // 🧹: то же, что 🎧, но с флагом clean: «эээ» вырезаются, даже если в настройках модуля очистка выключена
@@ -1056,7 +1057,7 @@
           return { n: 'Скачать аудио без эээ', info: 'Скачать русскую аудиодорожку и обязательно вырезать эээ', g: '🧹', c: ['#aed581', '#558b2f'],
             tap: run(() => launchIntent(cleanIntent(url, title))) };
         case 'vot':
-          return { n: 'Перевод Яндекса', info: 'Перевод Яндекса: русская озвучка ролика', g: '🗣', c: ['#7986cb', '#283593'],
+          return { n: 'Видео с переводом', info: 'Скачать видео с русским переводом Яндекса вместо оригинального звука. Файл сохранится в отдельной папке Видео', g: '🎬', c: ['#7986cb', '#283593'],
             tap: run(() => launchIntent(votIntent(url, title))) };
         default: {   // app1..app3: три одинаковые кнопки приложений
           const k = 'slotApp' + id.slice(3), pkg = getSlot(k);
