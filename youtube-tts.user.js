@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 11.9
+// @version 12.0
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '11.9';
+  const VERSION = '12.0';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -873,7 +873,7 @@
   //       из папки кружок вытаскивают на пустое место ряда); 🔊 — вслух перечисляет, что делают кнопки; удержание кружка — подробнее вслух.
   //   ↗ — новая вкладка с переходом в неё; 📝 — в фоне откроется SUBVOICE (https://example.com/#sv=ссылка) с русскими субтитрами;
   //   🎧 — модуль «YouTube аудио» в Universal-application: скачать русскую дорожку (очистка «эээ» — как в настройках модуля);
-  //   🧹 — то же, но «эээ» вырезаются обязательно; 🎬 — видео с русским переводом Яндекса вместо оригинального звука (mp4 в отдельной папке «Видео»);
+  //   🧹 — то же, но «эээ» вырезаются обязательно (движком из настроек модуля); 🧹U, 🧹S, 🧹G — то же, но движком Uhm, Steady или GigaAM (чтобы сравнивать на одном ролике); 🎬 — видео с русским переводом Яндекса вместо оригинального звука (mp4 в отдельной папке «Видео»);
   //   три одинаковые кнопки приложений: тап — отправить ссылку в запомненное приложение, а если оно не выбрано — системное «Поделиться»;
   //   удержание — выбрать приложение (значки или имя пакета через ✎). Страница не может узнать выбор в системном списке,
   //   поэтому приложение привязывается по имени пакета.
@@ -923,6 +923,9 @@
   // 🧹: то же, что 🎧, но с флагом clean: «эээ» вырезаются, даже если в настройках модуля очистка выключена
   const cleanIntent = (url, title) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
     'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';B.clean=true;end';
+  // 🧹U / 🧹S / 🧹G: то же, но с extra engine (0 Uhm, 1 Steady, 2 GigaAM): движок очистки только для этого ролика
+  const engineIntent = (url, title, n) => 'intent:#Intent;action=android.intent.action.SEND;type=text/x-ytaudio;package=im.manus.universalhost;' +
+    'S.android.intent.extra.TEXT=' + encodeURIComponent(url) + ';S.android.intent.extra.SUBJECT=' + encodeURIComponent(title || '') + ';i.engine=' + n + ';end';
   const viewIntent = (id, pkg) => 'intent://youtu.be/' + id + '#Intent;scheme=https;' + (pkg ? 'package=' + pkg + ';' : '') + 'action=android.intent.action.VIEW;end';
   async function doShare(url, title) {
     if (navigator.share) {
@@ -980,7 +983,7 @@
   // ── Раскладка меню: порядок, папки, скрытые кнопки ─────────────────────────
   // Хранится в menuLayout: { order: [id | { f: 'f123', items: [id…] }], hidden: [id кнопки или папки…] }.
   // Любая кнопка, которой нет в сохранённом виде (например, новая в обновлении), добавляется в конец.
-  const BTN_IDS = ['tab', 'sv', 'aud', 'clean', 'vot', 'app1', 'app2', 'app3'];
+  const BTN_IDS = ['tab', 'sv', 'aud', 'clean', 'cu', 'cs', 'cg', 'vot', 'app1', 'app2', 'app3'];
   const GRAY = ['#90a4ae', '#455a64'];
   function fixLayout(L) {
     const seen = new Set(), order = [];
@@ -1056,6 +1059,15 @@
         case 'clean':
           return { n: 'Скачать аудио без эээ', info: 'Скачать русскую аудиодорожку и обязательно вырезать эээ', g: '🧹', c: ['#aed581', '#558b2f'],
             tap: run(() => launchIntent(cleanIntent(url, title))) };
+        case 'cu':
+          return { n: 'Аудио без эээ, Uhm', info: 'Скачать аудио и вырезать эээ движком Uhm: модель на английском', g: '🧹U', c: ['#aed581', '#33691e'],
+            tap: run(() => launchIntent(engineIntent(url, title, 0))) };
+        case 'cs':
+          return { n: 'Аудио без эээ, Steady', info: 'Скачать аудио и вырезать эээ движком Steady: ищет долгие ровные гласные, без модели', g: '🧹S', c: ['#81c784', '#1b5e20'],
+            tap: run(() => launchIntent(engineIntent(url, title, 1))) };
+        case 'cg':
+          return { n: 'Аудио без эээ, GigaAM', info: 'Скачать аудио и вырезать эээ движком GigaAM: русское распознавание речи, тяжёлая модель', g: '🧹G', c: ['#4db6ac', '#004d40'],
+            tap: run(() => launchIntent(engineIntent(url, title, 2))) };
         case 'vot':
           return { n: 'Видео с переводом', info: 'Скачать видео с русским переводом Яндекса вместо оригинального звука. Файл сохранится в отдельной папке Видео', g: '🎬', c: ['#7986cb', '#283593'],
             tap: run(() => launchIntent(votIntent(url, title))) };
