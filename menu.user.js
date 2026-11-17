@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         menu
 // @namespace    https://github.com/vladyslavbokovnia/openscript
-// @version      1.12.1
+// @version      1.12.0
 // @description  Озвучка страницы (тап по тексту, ссылке или кнопке — старт, тап во время озвучки — стоп, перемотка свайпами влево/вправо, подсветка, плавная прокрутка), управление геймпадом и медиа-кнопками, чтение поля ввода (геймпад / телефон вертикально) и круговое меню на долгое нажатие по ссылке или кнопке, открывающей страницу: открыть в этой же вкладке или в новой (в том числе в выбранном профиле); тёмная тема включается сама на светлых сайтах (в браузере универсального приложения); перевод страницы на русский, если она не на русском; видео не запускается само (автозапуск, видео-анимации, YouTube) и не грузится, пока вы не нажали на плеер
 // @license      MIT
 // @match        *://*/*
@@ -1427,9 +1427,7 @@
 
   // Нажимаемым считается <a href>, кнопка, [role=button/link], элемент с onclick/data-href; в крайнем случае — любой элемент с курсором-«рукой»
   const CLICKABLE = 'a[href],button,input[type=button],input[type=submit],input[type=image],[role=button],[role=link],[role=menuitem],[onclick],[data-href],[data-url],[data-link]';
-  const PROBE_MS = 1500;   // сколько ждём, что кнопка попытается открыть страницу, если она ничего не запрашивает у сервера
-  const PROBE_MAX = 12000; // потолок ожидания, когда кнопка сначала запрашивает адрес у сервера (вход, подключение сервиса)
-  const PROBE_GRACE = 800; // сколько ещё ждём после ответа сервера: страница открывает окно уже после него
+  const PROBE_MS = 1500;   // сколько ждём, что кнопка попытается открыть страницу
 
   function targetFrom(e) {
     const path = e.composedPath ? e.composedPath() : [e.target];
@@ -1490,63 +1488,15 @@
           undo.push(() => nav.removeEventListener('navigate', onNav));
         }
       } catch (e) {}
-      try {   // window.open(url) на время клика; window.open('') с адресом позже (w.location.href = url) тоже ловим
+      try {   // window.open(url) на время клика
         const had = Object.prototype.hasOwnProperty.call(W, 'open'), orig = W.open;
-        const fromUrl = v => { try { const t = String(v); if (t && t !== 'about:blank') finish({ url: new URL(t, location.href).href }); } catch (e) {} };
-        const fakeWin = () => {
-          const loc = { assign: fromUrl, replace: fromUrl, reload() {}, toString() { return 'about:blank'; } };
-          Object.defineProperty(loc, 'href', { get() { return 'about:blank'; }, set: fromUrl });
-          const w = { closed: false, opener: null, focus() {}, blur() {}, postMessage() {}, close() { w.closed = true; },
-            document: { write() {}, writeln() {}, open() {}, close() {}, title: '' } };
-          Object.defineProperty(w, 'location', { get() { return loc; }, set: fromUrl });
-          return w;
+        W.open = function (u) {
+          try { if (u) finish({ url: new URL(String(u), location.href).href }); } catch (e) {}
+          return null;
         };
-        W.open = function (u) { fromUrl(u); return fakeWin(); };
         undo.push(() => { if (had) W.open = orig; else delete W.open; });
       } catch (e) {}
-      try {   // программный клик по <a href> (в том числе с target=_blank): адрес берём, переход не даём
-        const AP = W.HTMLAnchorElement && W.HTMLAnchorElement.prototype, oa = AP && AP.click;
-        if (oa) {
-          AP.click = function () {
-            try { const h = this.href; if (h && /^https?:/i.test(h)) { finish({ url: h }); return; } } catch (e) {}
-            return oa.apply(this, arguments);
-          };
-          undo.push(() => { AP.click = oa; });
-        }
-      } catch (e) {}
-      // Кнопка может сначала спросить адрес у сервера (fetch/XHR) и открыть страницу только после ответа: пока запросы идут, ждём
-      let pending = 0, lastNet = Date.now();
-      const netDone = () => { pending = Math.max(0, pending - 1); lastNet = Date.now(); };
-      try {
-        const of = W.fetch;
-        if (typeof of === 'function') {
-          W.fetch = function () {
-            pending++;
-            let r;
-            try { r = of.apply(this, arguments); } catch (e) { netDone(); throw e; }
-            try { r.then(netDone, netDone); } catch (e) { netDone(); }
-            return r;
-          };
-          undo.push(() => { W.fetch = of; });
-        }
-      } catch (e) {}
-      try {
-        const XP = W.XMLHttpRequest && W.XMLHttpRequest.prototype, os = XP && XP.send;
-        if (os) {
-          XP.send = function () {
-            pending++;
-            try { this.addEventListener('loadend', netDone); } catch (e) { netDone(); }
-            return os.apply(this, arguments);
-          };
-          undo.push(() => { XP.send = os; });
-        }
-      } catch (e) {}
-      const t0 = Date.now();
-      const iv = setInterval(() => {
-        const now = Date.now();
-        if (now - t0 >= PROBE_MAX || (pending === 0 && now - t0 >= PROBE_MS && now - lastNet >= PROBE_GRACE)) finish(null);
-      }, 150);
-      undo.push(() => clearInterval(iv));
+      setTimeout(() => finish(null), PROBE_MS);
       try { el.click(); } catch (e) { finish(null); }
     });
   }
@@ -1565,13 +1515,12 @@
     let url = staticUrl(el);
     if (!url && same) { pressHere(el); return; }
     if (!url) {
-      toast('Определяю адрес…', PROBE_MAX);
+      toast('Определяю адрес…', 1600);
       const r = await probeUrl(el);
       if (r && r.post) { toast('Это отправка формы (POST) — в новой вкладке не открыть', 2800); return; }
       url = r && r.url;
     }
     if (!url) { toast('Эта кнопка не открывает страницу', 2200); return; }
-    toast('Открываю…', 700);
     if (same) { location.href = url; return; }
     openLink(url, profile);
   }
