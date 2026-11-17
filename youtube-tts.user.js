@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 12.0
+// @version 12.1
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -53,7 +53,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '12.0';
+  const VERSION = '12.1';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -875,7 +875,8 @@
   //   🎧 — модуль «YouTube аудио» в Universal-application: скачать русскую дорожку (очистка «эээ» — как в настройках модуля);
   //   🧹 — то же, но «эээ» вырезаются обязательно (движком из настроек модуля); 🧹U, 🧹S, 🧹G — то же, но движком Uhm, Steady или GigaAM (чтобы сравнивать на одном ролике); 🎬 — видео с русским переводом Яндекса вместо оригинального звука (mp4 в отдельной папке «Видео»);
   //   три одинаковые кнопки приложений: тап — отправить ссылку в запомненное приложение, а если оно не выбрано — системное «Поделиться»;
-  //   удержание — выбрать приложение (значки или имя пакета через ✎). Страница не может узнать выбор в системном списке,
+  //   удержание — выбрать приложение: значки, 📱 полный список приложений телефона с поиском (даёт браузер универсального приложения,
+  //   в других менеджерах скриптов этой кнопки нет) или имя пакета через ✎. Страница не видит выбор в системном списке,
   //   поэтому приложение привязывается по имени пакета.
   // Если за 1,5 с никто не коснулся меню — открывается системное «Поделиться».
   // Если выключена настройка shareMenu — остаётся только это меню: без таймера, закрывается выбором пункта или тапом мимо.
@@ -947,8 +948,24 @@
     { pkg: 'com.junkfood.seal',          n: 'Seal',     g: '🦭', c: ['#4dd0e1', '#00838f'] },
     { pkg: 'org.telegram.messenger',     n: 'Телеграм', g: '✈',  c: ['#4fc3f7', '#0277bd'] },
   ];
-  const appInfo = pkg => APPS.find(a => a.pkg === pkg) ||
-    { pkg, n: pkg.split('.').pop() || pkg, g: (pkg.split('.').pop() || '?').charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
+  // Названия приложений, выбранных из полного списка телефона: пакет -> название (для озвучки и значка)
+  const getLabels = () => { try { return JSON.parse(GM_getValue('appLabels', '{}')) || {}; } catch { return {}; } };
+  const setLabel = (pkg, n) => { try { const m = getLabels(); m[pkg] = n; GM_setValue('appLabels', JSON.stringify(m)); } catch {} };
+  const appInfo = pkg => APPS.find(a => a.pkg === pkg) || (() => {
+    const n = getLabels()[pkg] || pkg.split('.').pop() || pkg;
+    return { pkg, n, g: n.charAt(0).toUpperCase(), c: ['#9575cd', '#4527a0'] };
+  })();
+  // Полный список приложений телефона, которым можно отправить текст, даёт браузер универсального приложения
+  // (GM_openInTab.apps, нужен @grant GM_openInTab); в других менеджерах скриптов его нет, тогда кнопки 📱 не будет.
+  const installedApps = () => {
+    try {
+      if (typeof GM_openInTab === 'function' && typeof GM_openInTab.apps === 'function') {
+        const l = GM_openInTab.apps();
+        if (Array.isArray(l) && l.length) return l;
+      }
+    } catch {}
+    return null;
+  };
   const getSlot = k => { try { return GM_getValue(k, '') || ''; } catch { return ''; } };
   const setSlot = (k, v) => { try { GM_setValue(k, v); } catch {} };
 
@@ -1094,19 +1111,57 @@
       return 'Кнопки по порядку. ' + parts.join('. ') + '. Удержание кнопки: подробнее.';
     };
 
-    // Выбор приложения для слота: ряд значков; ✎ — ввести имя пакета, 🚫 — очистить слот
+    // Выбор приложения для слота: ряд значков; 📱 — полный список приложений телефона, ✎ — ввести имя пакета, 🚫 — очистить слот
+    const chooseApp = (k, pkg, label) => {
+      setSlot(k, pkg); if (label) setLabel(pkg, label);
+      showToast('✓ Сохранено', 1200); view = ''; renderMain();
+    };
     function renderPicker(k) {
       stopTimer(); view = 'pick';
       pop.textContent = '';
       const back = () => { view = ''; renderMain(); };
-      const choose = pkg => { setSlot(k, pkg); showToast('✓ Сохранено', 1200); back(); };
+      const choose = pkg => chooseApp(k, pkg);
       pop.append(small(mkCircle('‹', GRAY, back)));
       APPS.forEach(a => pop.append(mkCircle(a.g, a.c, () => choose(a.pkg))));
+      if (installedApps()) pop.append(mkCircle('📱', ['#42a5f5', '#0d47a1'], () => renderAllApps(k)));
       pop.append(mkCircle('✎', ['#b0bec5', '#37474f'], () => {
         const v = (prompt('Имя пакета приложения, например com.snaptube.premium', getSlot(k)) || '').trim();
         if (/^[a-zA-Z]\w*(\.\w+)+$/.test(v)) choose(v); else if (v) showToast('Неверное имя пакета', 1800);
       }));
       if (getSlot(k)) pop.append(mkCircle('🚫', ['#757575', '#212121'], () => { setSlot(k, ''); back(); }));
+    }
+
+    // Полный список приложений телефона с поиском; тап по строке привязывает приложение к кнопке
+    function renderAllApps(k) {
+      stopTimer(); view = 'pick';
+      pop.textContent = '';
+      const list = installedApps() || [];
+      pop.append(small(mkCircle('‹', GRAY, () => renderPicker(k))));
+      const box = document.createElement('div');
+      Object.assign(box.style, { width: '100%', maxHeight: '55vh', display: 'flex', flexDirection: 'column', gap: '6px',
+        background: 'rgba(20,20,20,0.9)', borderRadius: '16px', padding: '10px', boxSizing: 'border-box' });
+      const filter = document.createElement('input');
+      filter.type = 'text'; filter.placeholder = 'Поиск по названию';
+      Object.assign(filter.style, { width: '100%', padding: '8px 10px', borderRadius: '10px', border: '1px solid #666',
+        background: '#111', color: '#fff', fontSize: '15px', boxSizing: 'border-box' });
+      const scroll = document.createElement('div');
+      Object.assign(scroll.style, { overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' });
+      const fill = () => {
+        const q = filter.value.trim().toLowerCase();
+        scroll.textContent = '';
+        list.filter(a => !q || a.n.toLowerCase().includes(q) || a.p.toLowerCase().includes(q)).forEach(a => {
+          const row = document.createElement('button');
+          row.textContent = a.n;
+          Object.assign(row.style, { textAlign: 'left', padding: '10px 12px', borderRadius: '10px', border: 'none',
+            background: 'rgba(255,255,255,0.12)', color: '#fff', fontSize: '15px' });
+          row.addEventListener('click', e => { e.stopPropagation(); chooseApp(k, a.p, a.n); });
+          scroll.append(row);
+        });
+      };
+      filter.addEventListener('input', fill);
+      fill();
+      box.append(filter, scroll);
+      pop.append(box);
     }
 
     const toggleHidden = id => {
