@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 12.1
+// @version 12.2
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -37,6 +37,7 @@
     translate: true,   // переводить нерусские названия на русский сразу после загрузки
     media: true,       // медиакоманды (гарнитура, экран блокировки, медиаклавиши)
     gamepad: true,     // управление озвучкой с геймпада
+    watchBtn: true,    // кнопка меню (скачать / поделиться) на открытом ролике и в Shorts
   };
 
   function loadCFG() {
@@ -53,7 +54,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '12.1';
+  const VERSION = '12.2';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -733,6 +734,13 @@
     }
     lines.push('');
 
+    lines.push('--- Открытый ролик ---');
+    const pv = pageVideo();
+    lines.push(`Ролик: ${pv ? pv.id + (pv.short ? ' (Shorts)' : '') : 'нет (не страница ролика)'}`);
+    if (pv) lines.push(`Название: "${pageTitle() || 'НЕ НАЙДЕНО'}"`);
+    lines.push(`Кнопка меню: ${watchBtn ? (watchBtn.style.display === 'none' ? 'скрыта' : 'показана') : 'не создана'}`);
+    lines.push('');
+
     lines.push('--- TTS ---');
     lines.push(`speechSynthesis: ${'speechSynthesis' in window ? 'есть' : 'НЕТ'}`);
     const voices = synth.getVoices();
@@ -820,6 +828,7 @@
 
     flag('shareOnTap', 'Поделиться по тапу');
     flag('shareMenu', 'Системное «Поделиться» через 1,5 с');
+    flag('watchBtn', 'Кнопка меню на открытом ролике', () => updateWatchBtn());
     flag('translate', 'Перевод названий на русский', on => { if (on) scanTitles(); });
     flag('media', 'Медиакоманды (гарнитура, шторка)', on => { if (enabled) { if (on) mediaStart(); else mediaStop(); } });
     flag('gamepad', 'Геймпад: A пауза · B стоп · X повтор · LB/RB, ↑/↓ — пред./след. · ←/→ скорость');
@@ -881,6 +890,7 @@
   // Если за 1,5 с никто не коснулся меню — открывается системное «Поделиться».
   // Если выключена настройка shareMenu — остаётся только это меню: без таймера, закрывается выбором пункта или тапом мимо.
   // Страница не знает про группы вкладок: новая вкладка встаёт в группу вкладки-источника — это решает браузер.
+  // На открытом ролике (и в Shorts) то же меню открывает кнопка ⬇ (см. «Открытый ролик» ниже): без таймера «Поделиться».
   let pop = null, popTimer = null, popOutside = null;
   function closePop() {
     clearTimeout(popTimer); popTimer = null;
@@ -1038,7 +1048,8 @@
 
   let dragMoved = false;
 
-  function openShare(info, title) {
+  // opts.manual — меню открыто кнопкой ⬇ на открытом ролике: таймер системного «Поделиться» не нужен
+  function openShare(info, title, opts) {
     closePop();
     const url = `https://youtu.be/${info.id}`;
     const tabUrl = `${location.origin}/${info.short ? 'shorts/' : 'watch?v='}${info.id}`;
@@ -1304,8 +1315,8 @@
 
     renderMain();
     document.body.appendChild(pop);
-    if (CFG.shareMenu) popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
-    else armOutside();   // режим «только первое меню»: без таймера, закрывается тапом мимо
+    if (CFG.shareMenu && !(opts && opts.manual)) popTimer = setTimeout(() => { closePop(); doShare(url, title); }, 1500);
+    else armOutside();   // режим «только первое меню» или кнопка ⬇: без таймера, закрывается тапом мимо
   }
 
   function patchCard(card) {
@@ -1322,6 +1333,58 @@
     document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard);
     scheduleScan();
   });
+
+  // ── Открытый ролик: кнопка ⬇ открывает то же меню ──────────────────────────
+  // По тапу на сам плеер меню не вешаем (он показывает/прячет управление), поэтому на страницах
+  // /watch, /shorts/ и /live/ слева внизу появляется отдельный кружок. Ролик берётся из адреса,
+  // название — из заголовка страницы (запасной вариант — document.title). Показ следит за сменой
+  // страницы без перезагрузки (SPA) и за настройкой watchBtn.
+  let watchBtn = null;
+  const PAGE_TITLE_SELECTORS = [
+    'ytd-reel-video-renderer[is-active] yt-shorts-video-title-view-model h2',
+    'ytm-reel-player-header-renderer .reel-player-header-video-title',
+    '.slim-video-information-title',
+    'ytm-slim-video-metadata-section-renderer h2',
+    'h1.ytd-watch-metadata',
+    '#title h1',
+    'h1',
+  ];
+  function pageVideo() {
+    const p = location.pathname;
+    let m = p.match(/^\/shorts\/([^/?#]+)/); if (m) return { id: m[1], short: true };
+    m = p.match(/^\/live\/([^/?#]+)/); if (m) return { id: m[1], short: false };
+    if (p === '/watch') {
+      const v = new URLSearchParams(location.search).get('v');
+      if (v) return { id: v, short: false };
+    }
+    return null;
+  }
+  function pageTitle() {
+    for (const sel of PAGE_TITLE_SELECTORS) {
+      const el = document.querySelector(sel);
+      const t = el && el.textContent && el.textContent.trim();
+      if (t && t.length > 1) return t;
+    }
+    return document.title.replace(/^\(\d+\)\s*/, '').replace(/\s*[-–—]\s*YouTube\s*$/i, '').trim();
+  }
+  function createWatchBtn() {
+    // left: 56px — правее боковой кнопки «‹», когда включена озвучка ленты; по центру внизу кнопка 📢
+    watchBtn = btnBase({ bottom: '14px', left: '56px', width: '48px', height: '48px', borderRadius: '50%', fontSize: '22px', display: 'none' });
+    watchBtn.textContent = '⬇';
+    watchBtn.setAttribute('aria-label', 'Меню ролика: скачать, поделиться');
+    watchBtn.addEventListener('click', e => {
+      e.stopPropagation();
+      const info = pageVideo(); if (!info) return;
+      openShare(info, pageTitle(), { manual: true });
+    });
+    document.body.appendChild(watchBtn);
+  }
+  function updateWatchBtn() {
+    if (!watchBtn) return;
+    const show = !!(CFG.watchBtn && pageVideo());
+    watchBtn.style.display = show ? 'flex' : 'none';
+    if (!show && pop && !CFG.watchBtn) closePop();
+  }
 
   // ── Переворот вверх ногами → конец ленты ───────────────────────────────────
   // Пока телефон перевёрнут, прокрутка в конец повторяется (лента дозагружается и
@@ -1390,11 +1453,16 @@
   function init() {
     if (document.getElementById('yt-tts-play')) return;
     createUI();
+    createWatchBtn();
+    updateWatchBtn();
     registerMenuCommands();
     document.querySelectorAll(CARD_SELECTORS.join(',')).forEach(patchCard);
     cardObserver.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('deviceorientation', onFlip, { passive: true });
     window.addEventListener('scroll', scheduleScan, { passive: true });
+    // Смена страницы без перезагрузки: события YouTube (десктоп и мобильный) и «назад/вперёд»
+    ['yt-navigate-finish', 'state-navigatefinish', 'popstate'].forEach(ev =>
+      window.addEventListener(ev, () => { setTimeout(updateWatchBtn, 150); setTimeout(updateWatchBtn, 900); }, true));
     initBar();
     scheduleScan();
   }
@@ -1408,6 +1476,7 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href; setTimeout(findBar, 1500);
       scheduleScan();
+      updateWatchBtn();
       if (enabled) {
         speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD();
         synth.cancel(); lastSpokenEl = null;
