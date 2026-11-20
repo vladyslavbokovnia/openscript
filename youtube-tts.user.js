@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name 📢 YouTube TTS
 // @namespace http://tampermonkey.net/
-// @version 12.2
+// @version 12.3
 // @description Листает ленту YouTube по роликам, озвучивает название и дату; переводит названия на русский; управление с геймпада и медиакнопок
 // @author Vlad
 // @match https://m.youtube.com/*
@@ -33,6 +33,9 @@
     shareOnTap: true,
     shareMenu: true,   // false → только первое меню, без системного «Поделиться» и без таймера 1,5 с
     flipBottom: false,
+    flipPose: 0,        // положение для прокрутки в конец: 0 вверх ногами, 1 боком (левый край вниз), 2 боком (правый край вниз), 3 экраном вниз
+    flipHaptics: true,  // вибро-сигналы при прокрутке в конец (подгрузка, конец Wi-Fi, конец ленты)
+    flipWifiStop: true, // не грузить ленту, когда Wi-Fi пропал (и не начинать без Wi-Fi)
     hideBar: true,
     translate: true,   // переводить нерусские названия на русский сразу после загрузки
     media: true,       // медиакоманды (гарнитура, экран блокировки, медиаклавиши)
@@ -54,7 +57,7 @@
   }
   let CFG = loadCFG();
 
-  const VERSION = '12.2';
+  const VERSION = '12.3';
 
   // ── TTS ───────────────────────────────────────────────────────────────────
   const synth = window.speechSynthesis;
@@ -833,7 +836,15 @@
     flag('media', 'Медиакоманды (гарнитура, шторка)', on => { if (enabled) { if (on) mediaStart(); else mediaStop(); } });
     flag('gamepad', 'Геймпад: A пауза · B стоп · X повтор · LB/RB, ↑/↓ — пред./след. · ←/→ скорость');
     flag('hideBar', 'Скрывать нижнюю панель', on => { if (!on) document.documentElement.classList.remove('ytt-hide'); });
-    flag('flipBottom', 'Переворот вверх ногами → конец ленты');
+    flag('flipBottom', 'Положение телефона → конец ленты');
+    add(`🧭 Положение: ${FLIP_POSES[CFG.flipPose] || FLIP_POSES[0]}`, () => {
+      CFG.flipPose = ((CFG.flipPose | 0) + 1) % FLIP_POSES.length; saveCFG(CFG);
+      flipStop(); flipBlocked = false;
+      showToast('🧭 ' + FLIP_POSES[CFG.flipPose], 1800);
+      registerMenuCommands();
+    });
+    flag('flipHaptics', 'Вибро: подгрузка ленты · конец Wi-Fi · конец ленты');
+    flag('flipWifiStop', 'Только по Wi-Fi: без Wi-Fi не грузить ленту');
     flag('tiltEnabled', 'Жесты наклона', on => { if (!on && enabled) disableTilt(); else if (on && enabled) enableTilt(); });
 
     add(`📐 Чувствительность наклона: ${CFG.tiltThreshold}°`, () => {
@@ -1386,15 +1397,64 @@
     if (!show && pop && !CFG.watchBtn) closePop();
   }
 
-  // ── Переворот вверх ногами → конец ленты ───────────────────────────────────
-  // Пока телефон перевёрнут, прокрутка в конец повторяется (лента дозагружается и
+  // ── Положение телефона → конец ленты ───────────────────────────────────────
+  // Пока телефон в выбранном положении, прокрутка в конец повторяется (лента дозагружается и
   // уходит дальше). Работает независимо от озвучки; озвучка на это время ставится на паузу.
-  let flipT = null, flipLoop = null;
+  // Вибро-сигналы, чтобы не глядя на экран понимать, что происходит:
+  //   короткий тик          — подгрузилась новая порция ленты (лента идёт дальше)
+  //   три долгих            — Wi-Fi пропал (загрузка остановлена, если включено «Только по Wi-Fi»)
+  //   два средних           — лента закончилась (новые ролики не подгружаются)
+  //   один короткий на старте — прокрутка началась
+  const FLIP_POSES = ['Вверх ногами (портрет)', 'Боком, левый край вниз', 'Боком, правый край вниз', 'Экраном вниз (плашмя)'];
+  const VIB = { start: 60, tick: 20, wifiLost: [350, 120, 350, 120, 350], end: [200, 120, 200] };
+  let flipT = null, flipLoop = null, flipBlocked = false;
   const CONT_SEL = 'ytm-continuation-item-renderer,ytd-continuation-item-renderer,[class*="continuation-item"]';
-  let flipH = 0, flipSame = 0;
+  let flipH = 0, flipSame = 0, flipEndSent = false, lastTick = 0, flipNet = null;
+
+  function buzz(pattern) {
+    if (!CFG.flipHaptics || !navigator.vibrate) return;
+    try { navigator.vibrate(pattern); } catch {}
+  }
+
+  // true — Wi-Fi (или проводная сеть), false — сети нет или мобильная, null — тип сети браузер не сообщает
+  const netConn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  function wifiState() {
+    if (!navigator.onLine) return false;
+    if (netConn && netConn.type && netConn.type !== 'unknown') return netConn.type === 'wifi' || netConn.type === 'ethernet';
+    return null;
+  }
+  function wifiLost() {
+    buzz(VIB.wifiLost);
+    showToast('📵 Wi-Fi пропал' + (CFG.flipWifiStop ? ' — загрузка ленты остановлена' : ''), 2500);
+  }
+  function checkNet() {
+    if (!flipLoop) return;
+    const now = wifiState();
+    const was = flipNet;
+    flipNet = now;
+    if (was !== false && now === false) {
+      wifiLost();
+      if (CFG.flipWifiStop) { flipBlocked = true; flipHalt(); }
+    }
+  }
+  if (netConn && netConn.addEventListener) netConn.addEventListener('change', checkNet);
+  window.addEventListener('offline', checkNet);
+
   function flipStep() {
     const h = document.documentElement.scrollHeight;
+    const grew = flipH > 0 && h > flipH + 50;
     if (h === flipH) flipSame++; else { flipSame = 0; flipH = h; }
+    if (grew) {
+      flipEndSent = false;
+      const t = Date.now();
+      if (t - lastTick > 1200) { lastTick = t; buzz(VIB.tick); }
+    } else if (flipSame >= 14 && !flipEndSent) {   // ~7 с без роста — лента закончилась
+      flipEndSent = true;
+      buzz(VIB.end);
+      showToast('🏁 Лента закончилась', 1800);
+    }
+    checkNet();
+    if (!flipLoop) return;
     // Лента не растёт — «встряхиваем»: чуть вверх, затем снова вниз, чтобы сработала подгрузка
     if (flipSame >= 3 && flipSame % 2 === 1) { window.scrollBy(0, -500); return; }
     const c = document.querySelector(CONT_SEL);
@@ -1402,24 +1462,45 @@
     window.scrollTo(0, document.documentElement.scrollHeight);
   }
   function flipStart() {
-    navigator.vibrate && navigator.vibrate(60);
+    flipNet = wifiState();
+    if (CFG.flipWifiStop && flipNet === false) {   // без Wi-Fi не начинаем и сообщаем виброй
+      flipBlocked = true;
+      wifiLost();
+      return;
+    }
+    buzz(VIB.start);
     showToast('⤓ Конец ленты', 1200);
     if (enabled) { speakGen++; clearTimeout(autoTimer); autoTimer = null; clearWD(); synth.cancel(); }
-    flipH = 0; flipSame = 0;
-    flipStep();
+    flipH = 0; flipSame = 0; flipEndSent = false; lastTick = 0;
     flipLoop = setInterval(flipStep, 500);
+    flipStep();
   }
-  function flipStop() {
-    clearTimeout(flipT); flipT = null;
+  function flipHalt() {
     if (!flipLoop) return;
     clearInterval(flipLoop); flipLoop = null;
     if (enabled && !paused) goTo(findCenterIndex());
   }
+  function flipStop() {
+    clearTimeout(flipT); flipT = null;
+    flipHalt();
+  }
+  function inFlipPose(e) {
+    const b = e.beta, g = e.gamma || 0;
+    switch (CFG.flipPose | 0) {
+      case 1: return g < -65;                                 // боком, левый край вниз
+      case 2: return g > 65;                                  // боком, правый край вниз
+      case 3: return Math.abs(b) > 150 && Math.abs(g) < 30;   // экраном вниз, плашмя
+      default: return b < -60 && b > -125 && Math.abs(g) < 50; // вверх ногами, портрет
+    }
+  }
   function onFlip(e) {
-    if (!CFG.flipBottom || e.beta == null) { flipStop(); return; }
-    const down = e.beta < -60 && e.beta > -125 && Math.abs(e.gamma || 0) < 50;
-    if (down) { if (!flipT && !flipLoop) flipT = setTimeout(() => { flipT = null; flipStart(); }, 350); }
-    else flipStop();
+    if (!CFG.flipBottom || e.beta == null) { flipBlocked = false; flipStop(); return; }
+    if (inFlipPose(e)) {
+      if (!flipT && !flipLoop && !flipBlocked) flipT = setTimeout(() => { flipT = null; flipStart(); }, 350);
+    } else {
+      flipBlocked = false;   // вышли из положения — следующий заход снова проверит Wi-Fi
+      flipStop();
+    }
   }
 
   // ── Нижняя панель YouTube: прячем при прокрутке вниз ───────────────────────
